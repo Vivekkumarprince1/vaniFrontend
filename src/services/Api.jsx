@@ -79,9 +79,20 @@ export const chatApi = {
   createRoom: (roomData) => api.post('/api/chat/room', roomData)
 };
 
-// Add health check endpoint
+// Update health check endpoint
 export const healthApi = {
-  check: () => api.get('/api/health')
+  check: async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await api.get('/api/health');
+        return response.data;
+      } catch (error) {
+        console.error(`Health check attempt ${i + 1}/${retries} failed:`, error);
+        if (i === retries - 1) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Exponential backoff
+      }
+    }
+  }
 };
 
 // Add connection status check

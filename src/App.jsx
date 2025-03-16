@@ -6,25 +6,21 @@ import Register from './pages/Register';
 import { AuthProvider } from './contexts/AuthContext';
 import { TranslationProvider } from './contexts/TranslationContext';
 import './App.css';
-import ConnectionNotification from './components/ConnectionNotification';
 
 const App = () => {
   return (
-    <>
-      <ConnectionNotification />
-      <AuthProvider>
-        <TranslationProvider>
-          <Router>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/" element={<Navigate to="/login" />} />
-            </Routes>
-          </Router>
-        </TranslationProvider>
-      </AuthProvider>
-    </>
+    <AuthProvider>
+      <TranslationProvider>
+        <Router>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/" element={<Navigate to="/login" />} />
+          </Routes>
+        </Router>
+      </TranslationProvider>
+    </AuthProvider>
   );
 };
 
