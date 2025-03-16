@@ -18,6 +18,8 @@ const VideoCall = ({
   const { currentLanguage } = useTranslation();
   const [transcribedText, setTranscribedText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
+  const [localTranscript, setLocalTranscript] = useState('');
+  const [remoteTranscript, setRemoteTranscript] = useState('');
   const audioContextRef = useRef(null);
   const sourceNodeRef = useRef(null);
   const processorNodeRef = useRef(null);
@@ -37,51 +39,161 @@ const VideoCall = ({
 
   const setupAudioProcessing = async () => {
     try {
-      // Create audio context and processor
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      if (!socket?.connected || !selectedUser?.preferredLanguage) {
+        console.warn('Socket not connected or missing preferred language');
+        return;
+      }
+  
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
       const audioTrack = localStream.getAudioTracks()[0];
       
-      // Create media stream source
+      if (!audioTrack) {
+        console.error('No audio track found');
+        return;
+      }
+  
       sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(new MediaStream([audioTrack]));
       
-      // Create script processor for audio processing
-      processorNodeRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
-      
-      // Connect nodes
-      sourceNodeRef.current.connect(processorNodeRef.current);
-      processorNodeRef.current.connect(audioContextRef.current.destination);
-      
-      // Process audio data
-      processorNodeRef.current.onaudioprocess = async (e) => {
-        const now = Date.now();
-        if (now - lastProcessedTime.current < PROCESS_INTERVAL) {
-          return; // Skip if less than 1 second has passed
-        }
-
-        const inputData = e.inputBuffer.getChannelData(0);
-        const audioData = new Float32Array(inputData);
-        
-        // Convert Float32Array to ArrayBuffer
-        const buffer = new ArrayBuffer(audioData.length * 4);
-        const view = new DataView(buffer);
-        audioData.forEach((value, index) => {
-          view.setFloat32(index * 4, value, true);
-        });
-        
-        // Send audio data for translation
-        socket.emit('translateAudio', {
-          audio: buffer,
-          sourceLanguage: currentLanguage,
-          targetLanguage: selectedUser?.preferredLanguage || 'en',
-          userId: selectedUser?.id
-        });
-
-        lastProcessedTime.current = now;
-      };
+      // Fallback directly to ScriptProcessor as it's more reliable
+      setupScriptProcessor();
     } catch (error) {
-      console.error('Error setting up audio processing:', error);
+      console.error('Audio processing setup failed:', error);
     }
   };
+  
+  const setupScriptProcessor = () => {
+    // Use a larger buffer size for more reliable processing
+    processorNodeRef.current = audioContextRef.current.createScriptProcessor(8192, 1, 1);
+    let audioBuffer = new Float32Array();
+    let lastProcessingTime = Date.now();
+    let isProcessing = false;
+    
+    processorNodeRef.current.onaudioprocess = (e) => {
+      if (isMuted || isProcessing) return;
+  
+      const inputData = e.inputBuffer.getChannelData(0);
+      const newBuffer = new Float32Array(audioBuffer.length + inputData.length);
+      newBuffer.set(audioBuffer);
+      newBuffer.set(inputData, audioBuffer.length);
+      audioBuffer = newBuffer;
+      
+      const now = Date.now();
+      // Process every 3 seconds for better recognition
+      if (now - lastProcessingTime >= 3000 && audioBuffer.length > 0) {
+        // Check for actual speech with a lower threshold
+        const hasSound = audioBuffer.some(sample => Math.abs(sample) > 0.005);
+        if (hasSound) {
+          isProcessing = true;
+          sendAudioForTranslation(audioBuffer)
+            .finally(() => {
+              isProcessing = false;
+              // Clear the buffer after processing
+              audioBuffer = new Float32Array();
+              lastProcessingTime = now;
+            });
+        } else {
+          // Clear the buffer even if no sound was detected
+          audioBuffer = new Float32Array();
+          lastProcessingTime = now;
+        }
+      }
+    };
+  
+    sourceNodeRef.current.connect(processorNodeRef.current);
+    processorNodeRef.current.connect(audioContextRef.current.destination);
+  };
+
+
+
+
+
+
+
+  const sendAudioForTranslation = async (audioData) => {
+  try {
+    // Check socket connection before proceeding
+    if (!socket?.connected) {
+      console.warn('Socket not connected, cannot send audio for translation');
+      return;
+    }
+    
+    // Convert to 16-bit PCM
+    const pcmData = new Int16Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      const s = Math.max(-1, Math.min(1, audioData[i]));
+      pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+
+    // Create WAV buffer
+    const wavBuffer = createWavBuffer(pcmData);
+    
+    // Convert to base64 safely
+    let base64Audio = '';
+    try {
+      // Handle large arrays by chunking
+      const chunks = [];
+      const chunkSize = 1024;
+      for (let i = 0; i < wavBuffer.length; i += chunkSize) {
+        chunks.push(String.fromCharCode.apply(null, wavBuffer.subarray(i, i + chunkSize)));
+      }
+      base64Audio = btoa(chunks.join(''));
+    } catch (e) {
+      console.error('Base64 conversion error:', e);
+      return;
+    }
+    
+    console.log('Sending audio for translation:', {
+      sourceLanguage: currentLanguage,
+      targetLanguage: selectedUser?.preferredLanguage || 'en',
+      audioLength: wavBuffer.length
+    });
+    
+    socket.emit('translateAudio', {
+      audio: base64Audio,
+      sourceLanguage: currentLanguage,
+      targetLanguage: selectedUser?.preferredLanguage || 'en',
+      userId: selectedUser?.id,
+      sampleRate: 16000,
+      encoding: 'WAV'
+    });
+  } catch (error) {
+    console.error('Error sending audio for translation:', error);
+  }
+};
+
+const createWavBuffer = (pcmData) => {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const dataLength = pcmData.length * 2; // 16-bit = 2 bytes per sample
+
+  // WAV header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(view, 8, 'WAVE');
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // Mono
+  view.setUint32(24, 16000, true); // Sample rate
+  view.setUint32(28, 32000, true); // Byte rate
+  view.setUint16(32, 2, true); // Block align
+  view.setUint16(34, 16, true); // Bits per sample
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  // Combine header and PCM data
+  const blob = new Uint8Array(header.byteLength + dataLength);
+  blob.set(new Uint8Array(header), 0);
+  blob.set(new Uint8Array(pcmData.buffer), header.byteLength);
+  
+  return blob;
+};
+
+const writeString = (view, offset, string) => {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+};
 
   const cleanupAudioProcessing = () => {
     if (processorNodeRef.current) {
@@ -101,115 +213,177 @@ const VideoCall = ({
   // Single useEffect for video streams
   useEffect(() => {
     const setupVideo = async (ref, stream, isLocal) => {
-      if (!ref.current || !stream) return;
-
-      try {
-        // Reset video element
-        ref.current.srcObject = null;
-        ref.current.muted = isLocal; // Local video should always be muted
-        
-        // Set new stream
-        ref.current.srcObject = stream;
-        
-        // Configure video element
-        ref.current.style.display = 'block';
-        ref.current.style.width = '100%';
-        ref.current.style.height = '100%';
-        ref.current.style.objectFit = 'cover';
-
-        // Play video with retries
-        try {
-          await ref.current.play();
-          console.log(`${isLocal ? 'Local' : 'Remote'} video playing with tracks:`, 
-            stream.getTracks().map(t => ({
-              kind: t.kind,
-              enabled: t.enabled,
-              muted: t.muted
-            }))
-          );
-        } catch (err) {
-          console.error(`Error playing ${isLocal ? 'local' : 'remote'} video:`, err);
-          // For remote video, try playing with muted as fallback
-          if (!isLocal) {
-            ref.current.muted = true;
-            await ref.current.play();
-          }
+        if (!ref.current || !stream) {
+            console.log(`${isLocal ? 'Local' : 'Remote'} video ref or stream missing`);
+            return;
         }
-      } catch (err) {
-        console.error(`Error setting up ${isLocal ? 'local' : 'remote'} video:`, err);
-      }
+
+        try {
+            // Log media information
+            console.log(`Setting up ${isLocal ? 'local' : 'remote'} video with tracks:`,
+                stream.getTracks().map(t => ({
+                    kind: t.kind,
+                    enabled: t.enabled,
+                    id: t.id,
+                    readyState: t.readyState
+                }))
+            );
+
+            // Reset video element
+            ref.current.srcObject = null;
+            
+            // Set new stream
+            ref.current.srcObject = stream;
+            ref.current.muted = isLocal; // Only mute local video
+            ref.current.playsInline = true;
+            
+            // Ensure video elements are properly sized
+            ref.current.style.width = '100%';
+            ref.current.style.height = '100%';
+            ref.current.style.objectFit = 'cover';
+
+            // Play with auto-play fallback
+            try {
+                await ref.current.play();
+                console.log(`${isLocal ? 'Local' : 'Remote'} video playing`);
+            } catch (playError) {
+                if (playError.name === 'NotAllowedError') {
+                    console.log('Auto-play prevented, waiting for user interaction');
+                    const playOnClick = async () => {
+                        try {
+                            await ref.current.play();
+                            ref.current.removeEventListener('click', playOnClick);
+                        } catch (err) {
+                            console.error('Play on click failed:', err);
+                        }
+                    };
+                    ref.current.addEventListener('click', playOnClick);
+                }
+            }
+
+        } catch (err) {
+            console.error(`Error setting up ${isLocal ? 'local' : 'remote'} video:`, err);
+        }
     };
 
-    // Handle local stream
     if (localStream) {
-      setupVideo(localVideoRef, localStream, true);
+        setupVideo(localVideoRef, localStream, true);
     }
-
-    // Handle remote stream
+    
     if (remoteStream) {
-      setupVideo(remoteVideoRef, remoteStream, false);
+        setupVideo(remoteVideoRef, remoteStream, false);
     }
 
     return () => {
-      // Cleanup
-      if (localVideoRef.current) localVideoRef.current.srcObject = null;
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+        // Cleanup function
+        const cleanupVideo = (ref) => {
+            if (ref.current) {
+                ref.current.srcObject = null;
+                ref.current.removeAttribute('src');
+                ref.current.load();
+            }
+        };
+        cleanupVideo(localVideoRef);
+        cleanupVideo(remoteVideoRef);
     };
-  }, [localStream, remoteStream]);
+}, [localStream, remoteStream]);
 
   useEffect(() => {
     if (!socket) return;
 
-    // Listen for translated audio and text
-    socket.on('translatedAudio', ({ text, audio }) => {
-      // Update transcribed/translated text
-      setTranscribedText(text.original);
-      setTranslatedText(text.translated);
-
-      // Play translated audio
-      if (audio) {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        
-        // Convert ArrayBuffer to AudioBuffer
-        audioContext.decodeAudioData(audio, (buffer) => {
-          const source = audioContext.createBufferSource();
-          source.buffer = buffer;
-          source.connect(audioContext.destination);
-          source.start(0);
-        }).catch(err => {
-          console.error('Error decoding audio data:', err);
-        });
+    const handleTranslatedAudio = ({ text, audio }) => {
+      if (text) {
+        setTranscribedText(text.original || '');
+        setTranslatedText(text.translated || '');
       }
+
+      if (audio) {
+        try {
+          const audioData = Uint8Array.from(atob(audio), c => c.charCodeAt(0));
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          
+          audioContext.decodeAudioData(audioData.buffer)
+            .then(decodedData => {
+              const source = audioContext.createBufferSource();
+              source.buffer = decodedData;
+              source.connect(audioContext.destination);
+              source.start(0);
+            })
+            .catch(err => console.error('Error playing translated audio:', err));
+        } catch (err) {
+          console.error('Error processing translated audio:', err);
+        }
+      }
+    };
+
+    socket.on('translatedAudio', handleTranslatedAudio);
+    socket.on('audioTranscript', ({ text, isLocal }) => {
+      if (isLocal) {
+        setLocalTranscript(text);
+      } else {
+        setRemoteTranscript(text);
+      }
+    });
+    socket.on('disconnect', () => {
+      console.warn('Socket disconnected, attempting to reconnect...');
+      socket.connect();
     });
 
     return () => {
-      socket.off('translatedAudio');
+      socket.off('translatedAudio', handleTranslatedAudio);
+      socket.off('audioTranscript');
+      socket.off('disconnect');
     };
   }, [socket]);
 
   return (
-    <div className="relative h-[calc(100vh-160px)] rounded-lg m-4 overflow-hidden bg-black flex flex-col">
-      {/* Remote Video - Make it fill the container */}
+    <div className="relative h-[calc(100vh-220px)] rounded-lg p-4 overflow-hidden bg-black flex flex-col">
+      {/* Remote Video */}
       <div className="flex-1 relative">
         <video
           ref={remoteVideoRef}
-          autoPlay
           playsInline
-          className="absolute inset-0 w-full h-full object-cover"
-          style={{ transform: 'scaleX(-1)' }}  // Mirror the video
+          className="absolute inset-0 w-full h-full object-cover video-element"
+          style={{ transform: 'scaleX(-1)' }}
         />
       </div>
 
-      {/* Local Video - Position it in the corner */}
+      {/* Local Video */}
       <div className="absolute top-4 right-4 w-48 h-36 bg-black rounded-lg overflow-hidden shadow-lg">
         <video
           ref={localVideoRef}
-          autoPlay
           playsInline
           muted
-          className="w-full h-full object-cover"
-          style={{ transform: 'scaleX(-1)' }}  // Mirror the video
+          className="w-full h-full object-cover video-element"
+          style={{ transform: 'scaleX(-1)' }}
         />
+      </div>
+
+      {/* Replace style jsx with style element */}
+      <style>
+        {`
+          .video-element {
+            -webkit-playsinline: 1;
+            playsinline: 1;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+          }
+        `}
+      </style>
+
+      {/* Transcripts overlay */}
+      <div className="absolute top-4 left-4 right-4 flex justify-between z-30">
+        {/* Local transcript */}
+        <div className="bg-black bg-opacity-50 p-2 rounded-lg max-w-[45%]">
+          <p className="text-sm text-gray-400">You:</p>
+          <p className="text-white text-sm">{localTranscript}</p>
+        </div>
+        {/* Remote transcript */}
+        <div className="bg-black bg-opacity-50 p-2 rounded-lg max-w-[45%]">
+          <p className="text-sm text-gray-400">Remote:</p>
+          <p className="text-white text-sm">{remoteTranscript}</p>
+        </div>
       </div>
 
       {/* Translation overlay */}

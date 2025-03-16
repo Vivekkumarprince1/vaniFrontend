@@ -41,10 +41,10 @@ const ChatContainer = () => {
 
       {/* Language preferences and input area */}
       <div className="bg-white border-t p-4">
-        <LanguagePreferences
+        {/* <LanguagePreferences
           selectedLanguage={selectedLanguage}
           onLanguageChange={handleLanguageChange}
-        />
+        /> */}
         <div className="mt-4">
           <input
             type="text"

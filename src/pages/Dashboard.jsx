@@ -91,9 +91,9 @@ const Dashboard = () => {
 
         socket.on('userStatusChanged', (data) => {
             console.log('User status changed:', data);
-            setUsers(prevUsers => 
-                prevUsers.map(u => 
-                    u.id === data.userId 
+            setUsers(prevUsers =>
+                prevUsers.map(u =>
+                    u.id === data.userId
                         ? { ...u, socketId: data.socketId, status: data.status }
                         : u
                 )
@@ -177,33 +177,78 @@ const Dashboard = () => {
                 peerConnection.close();
             }
 
+            // Create peer connection with ICE servers
             const pc = new RTCPeerConnection({
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    // Add TURN server if available
+                    // { 
+                    //   urls: 'turn:your-turn-server.com:3478',
+                    //   username: 'username',
+                    //   credential: 'password'
+                    // }
                 ],
                 iceCandidatePoolSize: 10,
                 bundlePolicy: 'max-bundle',
-                rtcpMuxPolicy: 'require'
+                rtcpMuxPolicy: 'require',
+                // Enable mandatory encryption
+                iceTransportPolicy: 'all',
+                // Set reliability options
+                sdpSemantics: 'unified-plan'
             });
 
-            // Handle track events immediately
+            // Create new MediaStream for remote tracks
+            const newRemoteStream = new MediaStream();
+            setRemoteStream(newRemoteStream);
+
+            // Handle incoming tracks immediately
             pc.ontrack = (event) => {
                 console.log('Received remote track:', event.track.kind);
-                if (event.streams?.[0]) {
-                    console.log('Setting remote stream with tracks:', 
-                        event.streams[0].getTracks().map(t => t.kind).join(', '));
-                    setRemoteStream(event.streams[0]);
+
+                // Add the track to our remote stream
+                newRemoteStream.addTrack(event.track);
+
+                // Ensure video element is updated
+                if (remoteVideoRef.current) {
+                    remoteVideoRef.current.srcObject = newRemoteStream;
+
+                    // Try to play the video
+                    remoteVideoRef.current.play().catch(err => {
+                        console.warn('Auto-play prevented for remote video:', err);
+                    });
                 }
+
+                // Log track information
+                event.track.onunmute = () => {
+                    console.log(`Remote ${event.track.kind} track unmuted and active`);
+                };
+
+                event.track.onmute = () => {
+                    console.log(`Remote ${event.track.kind} track muted`);
+                };
+
+                event.track.onended = () => {
+                    console.log(`Remote ${event.track.kind} track ended`);
+                };
             };
 
+            // Connection state monitoring with reconnection
             pc.onconnectionstatechange = () => {
                 console.log('Connection state:', pc.connectionState);
-                if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+
+                if (pc.connectionState === 'connected') {
+                    console.log('WebRTC connection established successfully');
+                } else if (pc.connectionState === 'disconnected') {
+                    console.log('WebRTC connection disconnected, attempting to recover...');
+                    // Could implement reconnection logic here
+                } else if (['failed', 'closed'].includes(pc.connectionState)) {
+                    console.log('WebRTC connection failed or closed');
                     endCall();
                 }
             };
 
+            // ICE candidate handling
             pc.onicecandidate = (event) => {
                 if (event.candidate && socket && selectedUser) {
                     console.log('Sending ICE candidate:', event.candidate);
@@ -214,15 +259,32 @@ const Dashboard = () => {
                 }
             };
 
-            // Set peer connection before setting up socket listeners
+            // ICE gathering state monitoring
+            pc.onicegatheringstatechange = () => {
+                console.log('ICE gathering state:', pc.iceGatheringState);
+            };
+
+            // ICE connection state monitoring
+            pc.oniceconnectionstatechange = () => {
+                console.log('ICE connection state:', pc.iceConnectionState);
+
+                if (pc.iceConnectionState === 'failed') {
+                    console.log('ICE connection failed, attempting to restart ICE...');
+                    pc.restartIce();
+                }
+            };
+
+            // Set peer connection state
             setPeerConnection(pc);
 
+            // Set up socket event handlers for signaling
             if (socket) {
-                // Remove any existing listeners
+                // Remove existing listeners first
                 socket.off('offer');
                 socket.off('answer');
                 socket.off('iceCandidate');
 
+                // Handle incoming offers
                 socket.on('offer', async ({ offer, from, type }) => {
                     console.log('Received offer from:', from, 'type:', type);
                     if (pc.signalingState !== 'stable') {
@@ -232,6 +294,7 @@ const Dashboard = () => {
                     setIncomingCall({ from, offer, type });
                 });
 
+                // Handle incoming answers
                 socket.on('answer', async ({ answer }) => {
                     console.log('Received answer, signaling state:', pc.signalingState);
                     try {
@@ -244,6 +307,7 @@ const Dashboard = () => {
                     }
                 });
 
+                // Handle incoming ICE candidates
                 socket.on('iceCandidate', async ({ candidate }) => {
                     console.log('Received ICE candidate');
                     try {
@@ -276,17 +340,29 @@ const Dashboard = () => {
                 id: u._id,
                 name: u.username,
                 socketId: u.socketId,
-                status: u.socketId ? 'online' : 'offline',
-                lastSeen: u.lastSeen ? new Date(u.lastSeen) : new Date(),
+                status: u.status === 'online' && u.socketId ? 'online' : 'offline',
+                lastSeen: u.lastActive ? new Date(u.lastActive) : new Date(),
                 avatar: u.username.charAt(0).toUpperCase(),
                 preferredLanguage: u.preferredLanguage
             }));
-            console.log('Fetched users with socket IDs:', mappedUsers);
             setUsers(mappedUsers);
         } catch (error) {
             console.error('Error fetching users:', error);
         }
     };
+
+    // Add an interval to refresh user statuses
+    useEffect(() => {
+        if (!isAuthenticated) return;
+
+        // Initial fetch
+        fetchUsers();
+
+        // Set up periodic refresh
+        const interval = setInterval(fetchUsers, 30000); // Every 30 seconds
+
+        return () => clearInterval(interval);
+    }, [isAuthenticated, user]);
 
     // Fetch rooms
     const fetchRooms = async () => {
@@ -364,6 +440,68 @@ const Dashboard = () => {
         }
     };
 
+
+
+
+
+
+    // Enhanced function to get user media with optimized constraints
+    const getOptimizedUserMedia = async (type = 'video') => {
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                channelCount: 1
+            },
+            video: type === 'video' ? {
+                width: { ideal: 640, max: 1280 },
+                height: { ideal: 480, max: 720 },
+                frameRate: { ideal: 24, max: 30 },
+                facingMode: 'user'
+            } : false
+        };
+
+        try {
+            // Request media with constraints
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+            // Configure audio tracks for better quality
+            stream.getAudioTracks().forEach(track => {
+                const settings = track.getSettings();
+                console.log('Audio track settings:', settings);
+
+                // Some browsers support additional constraints
+                try {
+                    if ('applyConstraints' in track) {
+                        track.applyConstraints({
+                            echoCancellation: true,
+                            noiseSuppression: true
+                        });
+                    }
+                } catch (constraintErr) {
+                    console.warn('Could not apply additional audio constraints:', constraintErr);
+                }
+            });
+
+            // Configure video tracks if present
+            if (type === 'video') {
+                stream.getVideoTracks().forEach(track => {
+                    const settings = track.getSettings();
+                    console.log('Video track settings:', settings);
+                });
+            }
+
+            return stream;
+        } catch (error) {
+            console.error('Error getting user media:', error);
+            throw error;
+        }
+    };
+
+
+
+
     // Start call
     const startCall = async (type = 'video') => {
         if (!selectedUser?.socketId) {
@@ -373,58 +511,57 @@ const Dashboard = () => {
         }
 
         try {
-            endCall(); // Clean up existing call
+            // Clean up existing call first
+            endCall();
 
             // Create RTCPeerConnection first
-            const pc = new RTCPeerConnection({
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ]
-            });
+            const pc = await setupWebRTC();
 
-            // Set up media stream first
+            // Set up media stream 
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: type === 'video',
                 audio: true
             });
 
-            // Set local stream immediately
+            // Set local stream before adding tracks
             setLocalStream(stream);
+
+            // Wait for state to update
+            await new Promise(resolve => setTimeout(resolve, 100));
 
             // Add tracks to peer connection
             stream.getTracks().forEach(track => {
+                console.log(`Adding ${track.kind} track to peer connection`);
                 pc.addTrack(track, stream);
             });
-
-            // Handle remote stream
-            pc.ontrack = (event) => {
-                console.log('Received remote track:', event.track.kind);
-                if (event.streams?.[0]) {
-                    console.log('Setting remote stream:', event.streams[0].id);
-                    setRemoteStream(event.streams[0]);
-                }
-            };
-
-            // Handle ICE candidates
-            pc.onicecandidate = (event) => {
-                if (event.candidate && socket) {
-                    console.log('Sending ICE candidate for track:', event.candidate.sdpMid);
-                    socket.emit('iceCandidate', {
-                        candidate: event.candidate,
-                        targetId: selectedUser.socketId
-                    });
-                }
-            };
 
             // Create and set local description
             const offer = await pc.createOffer({
                 offerToReceiveAudio: true,
                 offerToReceiveVideo: type === 'video'
             });
-            
+
             await pc.setLocalDescription(offer);
-            setPeerConnection(pc);
+
+            // Send offer only after ICE gathering is complete or after a timeout
+            await new Promise(resolve => {
+                const checkState = () => {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        setTimeout(checkState, 500);
+                    }
+                };
+                // Set a timeout to resolve anyway after 3 seconds
+                const timeout = setTimeout(() => resolve(), 3000);
+                pc.onicegatheringstatechange = () => {
+                    if (pc.iceGatheringState === 'complete') {
+                        clearTimeout(timeout);
+                        resolve();
+                    }
+                };
+                checkState();
+            });
 
             // Send offer
             socket.emit('offer', {
@@ -451,39 +588,20 @@ const Dashboard = () => {
             endCall();
 
             // Create new peer connection
-            const pc = new RTCPeerConnection({
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ]
-            });
+            const pc = await setupWebRTC();
 
-            // Set up peer connection handlers
-            pc.onicecandidate = (event) => {
-                if (event.candidate && socket) {
-                    socket.emit('iceCandidate', {
-                        candidate: event.candidate,
-                        targetId: incomingCall.from
-                    });
-                }
-            };
+            // Get local stream with user's camera and microphone
+            const stream = await getOptimizedUserMedia(incomingCall.type);
 
-            pc.ontrack = (event) => {
-                if (event.streams?.[0]) {
-                    setRemoteStream(event.streams[0]);
-                }
-            };
-
-            // Get local stream
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: incomingCall.type === 'video',
-                audio: true
-            });
-
+            // Set local stream and connect to video element
             setLocalStream(stream);
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+            }
 
-            // Add tracks to peer connection
+            // Add all local tracks to peer connection for sending to caller
             stream.getTracks().forEach(track => {
+                console.log(`Adding ${track.kind} track to peer connection`);
                 pc.addTrack(track, stream);
             });
 
@@ -494,9 +612,26 @@ const Dashboard = () => {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            // Set peer connection and send answer
-            setPeerConnection(pc);
+            // Send answer after ICE gathering is complete or after a timeout
+            await new Promise(resolve => {
+                const checkState = () => {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        setTimeout(checkState, 500);
+                    }
+                };
+                const timeout = setTimeout(() => resolve(), 3000);
+                pc.onicegatheringstatechange = () => {
+                    if (pc.iceGatheringState === 'complete') {
+                        clearTimeout(timeout);
+                        resolve();
+                    }
+                };
+                checkState();
+            });
 
+            // Send answer to caller
             socket.emit('answer', {
                 targetId: incomingCall.from,
                 answer: pc.localDescription
@@ -515,15 +650,45 @@ const Dashboard = () => {
     // End call
     const endCall = () => {
         console.log('Ending call');
-        
+
+        // First clean up tracks
         if (localStream) {
-            localStream.getTracks().forEach(track => track.stop());
+            localStream.getTracks().forEach(track => {
+                console.log(`Stopping ${track.kind} track`);
+                track.stop();
+            });
             setLocalStream(null);
         }
 
+        // Clean up peer connection
         if (peerConnection) {
+            // Close the peer connection
+            peerConnection.ontrack = null;
+            peerConnection.onicecandidate = null;
+            peerConnection.oniceconnectionstatechange = null;
+            peerConnection.onsignalingstatechange = null;
+            peerConnection.onicegatheringstatechange = null;
+            peerConnection.onnegotiationneeded = null;
+
+            // Close the connection
             peerConnection.close();
             setPeerConnection(null);
+        }
+
+        // Clean up socket listeners if needed
+        if (socket) {
+            socket.off('offer');
+            socket.off('answer');
+            socket.off('iceCandidate');
+        }
+
+        // Reset video refs
+        if (localVideoRef.current) {
+            localVideoRef.current.srcObject = null;
+        }
+
+        if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
         }
 
         setRemoteStream(null);
@@ -531,6 +696,8 @@ const Dashboard = () => {
         setIncomingCall(null);
         setIsMuted(false);
         setIsCameraOff(false);
+
+        console.log('Call ended and resources cleaned up');
     };
 
     // Handle call errors
