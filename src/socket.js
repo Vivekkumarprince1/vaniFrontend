@@ -2,17 +2,23 @@ import { io } from 'socket.io-client';
 
 const socket = io(import.meta.env.VITE_API_URL, {
   path: '/socket.io/',
-  transports: ['polling'],
-  reconnectionAttempts: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_ATTEMPTS || '5'),
+  transports: ['polling', 'websocket'],
+  reconnectionAttempts: 5,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
-  timeout: parseInt(import.meta.env.VITE_SOCKET_TIMEOUT || '20000'),
+  timeout: 20000,
   autoConnect: false,
-  withCredentials: true
+  withCredentials: true,
+  forceNew: true
 });
 
 socket.on('connect_error', (error) => {
   console.error('Socket connection error:', error);
+  // Try to reconnect with polling if WebSocket fails
+  if (socket.io.opts.transports.includes('websocket')) {
+    socket.io.opts.transports = ['polling'];
+    socket.connect();
+  }
 });
 
 socket.on('error', (error) => {
@@ -21,7 +27,7 @@ socket.on('error', (error) => {
 
 // Add connection success logging
 socket.on('connect', () => {
-  console.log('Socket connected successfully via', socket.io.engine.transport.name);
+  console.log('Socket connected successfully');
 });
 
 export default socket;
