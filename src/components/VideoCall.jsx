@@ -24,7 +24,7 @@ const VideoCall = ({
   const sourceNodeRef = useRef(null);
   const processorNodeRef = useRef(null);
   const lastProcessedTime = useRef(0);
-  const PROCESS_INTERVAL = 1000; // Process every 1 second
+  const PROCESS_INTERVAL = 1000; 
 
   useEffect(() => {
     if (!localStream || !peerConnection) return;
@@ -304,9 +304,29 @@ const writeString = (view, offset, string) => {
           
           audioContext.decodeAudioData(audioData.buffer)
             .then(decodedData => {
+              // Create a MediaStreamDestination to get a stream
+              const destination = audioContext.createMediaStreamDestination();
               const source = audioContext.createBufferSource();
               source.buffer = decodedData;
+              
+              // Connect to both destination (for WebRTC) and speakers
+              source.connect(destination);
               source.connect(audioContext.destination);
+              
+              // Replace remote audio track with translated audio
+              if (remoteStream && destination.stream.getAudioTracks().length > 0) {
+                const audioTracks = remoteStream.getAudioTracks();
+                audioTracks.forEach(track => track.stop());
+                
+                const newAudioTrack = destination.stream.getAudioTracks()[0];
+                remoteStream.addTrack(newAudioTrack);
+                
+                // Update remote video element
+                if (remoteVideoRef.current) {
+                  remoteVideoRef.current.srcObject = remoteStream;
+                }
+              }
+              
               source.start(0);
             })
             .catch(err => console.error('Error playing translated audio:', err));
