@@ -195,43 +195,34 @@ const Dashboard = () => {
                 // Enable mandatory encryption
                 iceTransportPolicy: 'all',
                 // Set reliability options
-                sdpSemantics: 'unified-plan'
+                sdpSemantics: 'unified-plan',
+                // Add specific audio configuration
+                rtcAudioJitterBufferMaxPackets: 500,
+                rtcAudioJitterBufferFastAccelerate: true
             });
 
-            // Create new MediaStream for remote tracks
+            // Create new MediaStream for remote tracks with specific audio constraints
             const newRemoteStream = new MediaStream();
             setRemoteStream(newRemoteStream);
 
-            // Handle incoming tracks immediately
             pc.ontrack = (event) => {
                 console.log('Received remote track:', event.track.kind);
-
-                // Add the track to our remote stream
-                newRemoteStream.addTrack(event.track);
-
-                // Ensure video element is updated
+                
+                // Only handle video tracks here, audio is handled separately
+                if (event.track.kind === 'video') {
+                    newRemoteStream.addTrack(event.track);
+                }
+                
                 if (remoteVideoRef.current) {
                     remoteVideoRef.current.srcObject = newRemoteStream;
-
-                    // Try to play the video
-                    remoteVideoRef.current.play().catch(err => {
-                        console.warn('Auto-play prevented for remote video:', err);
-                    });
                 }
-
-                // Log track information
-                event.track.onunmute = () => {
-                    console.log(`Remote ${event.track.kind} track unmuted and active`);
-                };
-
-                event.track.onmute = () => {
-                    console.log(`Remote ${event.track.kind} track muted`);
-                };
-
-                event.track.onended = () => {
-                    console.log(`Remote ${event.track.kind} track ended`);
-                };
             };
+
+            // Add specific audio handling configuration
+            pc.addTransceiver('audio', {
+                direction: 'sendrecv',
+                streams: [newRemoteStream]
+            });
 
             // Connection state monitoring with reconnection
             pc.onconnectionstatechange = () => {
