@@ -30,76 +30,47 @@ const VideoCall = ({
   useEffect(() => {
     if (!localStream || !peerConnection) return;
 
-    // Initialize audio processing for local stream
-    setupAudioProcessing(localStream, true);
+    // Initialize audio processing
+    setupAudioProcessing();
 
     return () => {
-      cleanupAudioProcessing('local');
+      cleanupAudioProcessing();
     };
   }, [localStream, peerConnection]);
 
-  // Add effect for remote stream audio processing
-  useEffect(() => {
-    if (!remoteStream || !peerConnection || !socket?.connected) return;
-
-    // Initialize audio processing for remote stream
-    setupAudioProcessing(remoteStream, false);
-
-    return () => {
-      cleanupAudioProcessing('remote');
-    };
-  }, [remoteStream, peerConnection, socket?.connected]);
-
-  // References for remote audio processing
-  const remoteAudioContextRef = useRef(null);
-  const remoteSourceNodeRef = useRef(null);
-  const remoteProcessorNodeRef = useRef(null);
-
-  const setupAudioProcessing = async (stream, isLocal) => {
+  const setupAudioProcessing = async () => {
     try {
       if (!socket?.connected || !selectedUser?.preferredLanguage) {
         console.warn('Socket not connected or missing preferred language');
         return;
       }
-      
-      // Use the appropriate refs based on whether this is local or remote stream
-      const contextRef = isLocal ? audioContextRef : remoteAudioContextRef;
-      const sourceRef = isLocal ? sourceNodeRef : remoteSourceNodeRef;
-      const processorRef = isLocal ? processorNodeRef : remoteProcessorNodeRef;
-      
-      // Create a new audio context
-      contextRef.current = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
-      
-      // Get the audio track from the stream
-      const audioTrack = stream.getAudioTracks()[0];
+  
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+      const audioTrack = localStream.getAudioTracks()[0];
       
       if (!audioTrack) {
-        console.error(`No audio track found in ${isLocal ? 'local' : 'remote'} stream`);
+        console.error('No audio track found');
         return;
       }
   
-      // Create a media stream source from the audio track
-      sourceRef.current = contextRef.current.createMediaStreamSource(new MediaStream([audioTrack]));
+      sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(new MediaStream([audioTrack]));
       
-      // Setup the script processor for this stream
-      setupScriptProcessor(isLocal, contextRef, sourceRef, processorRef);
-      
-      console.log(`Audio processing setup complete for ${isLocal ? 'local' : 'remote'} stream`);
+      // Fallback directly to ScriptProcessor as it's more reliable
+      setupScriptProcessor();
     } catch (error) {
-      console.error(`Audio processing setup failed for ${isLocal ? 'local' : 'remote'} stream:`, error);
+      console.error('Audio processing setup failed:', error);
     }
   };
   
-  const setupScriptProcessor = (isLocal, contextRef, sourceRef, processorRef) => {
+  const setupScriptProcessor = () => {
     // Use a larger buffer size for more reliable processing
-    processorRef.current = contextRef.current.createScriptProcessor(8192, 1, 1);
+    processorNodeRef.current = audioContextRef.current.createScriptProcessor(8192, 1, 1);
     let audioBuffer = new Float32Array();
     let lastProcessingTime = Date.now();
     let isProcessing = false;
     
-    processorRef.current.onaudioprocess = (e) => {
-      // For local stream, respect the mute state
-      if ((isLocal && isMuted) || isProcessing) return;
+    processorNodeRef.current.onaudioprocess = (e) => {
+      if (isMuted || isProcessing) return;
   
       const inputData = e.inputBuffer.getChannelData(0);
       const newBuffer = new Float32Array(audioBuffer.length + inputData.length);
@@ -114,7 +85,7 @@ const VideoCall = ({
         const hasSound = audioBuffer.some(sample => Math.abs(sample) > 0.005);
         if (hasSound) {
           isProcessing = true;
-          sendAudioForTranslation(audioBuffer, isLocal)
+          sendAudioForTranslation(audioBuffer)
             .finally(() => {
               isProcessing = false;
               // Clear the buffer after processing
@@ -129,10 +100,8 @@ const VideoCall = ({
       }
     };
   
-    sourceRef.current.connect(processorRef.current);
-    processorRef.current.connect(contextRef.current.destination);
-    
-    console.log(`Script processor setup complete for ${isLocal ? 'local' : 'remote'} stream`);
+    sourceNodeRef.current.connect(processorNodeRef.current);
+    processorNodeRef.current.connect(audioContextRef.current.destination);
   };
 
 
@@ -141,7 +110,7 @@ const VideoCall = ({
 
 
 
-  const sendAudioForTranslation = async (audioData, isLocal) => {
+  const sendAudioForTranslation = async (audioData) => {
   try {
     // Check socket connection before proceeding
     if (!socket?.connected) {
@@ -174,27 +143,22 @@ const VideoCall = ({
       return;
     }
     
-    // Determine source and target languages based on whether this is local or remote audio
-    const sourceLanguage = isLocal ? currentLanguage : (selectedUser?.preferredLanguage || 'en');
-    const targetLanguage = isLocal ? (selectedUser?.preferredLanguage || 'en') : currentLanguage;
-    
-    console.log(`Sending ${isLocal ? 'local' : 'remote'} audio for translation:`, {
-      sourceLanguage,
-      targetLanguage,
+    console.log('Sending audio for translation:', {
+      sourceLanguage: currentLanguage,
+      targetLanguage: selectedUser?.preferredLanguage || 'en',
       audioLength: wavBuffer.length
     });
     
     socket.emit('translateAudio', {
       audio: base64Audio,
-      sourceLanguage,
-      targetLanguage,
+      sourceLanguage: currentLanguage,
+      targetLanguage: selectedUser?.preferredLanguage || 'en',
       userId: selectedUser?.id,
       sampleRate: 16000,
-      encoding: 'WAV',
-      isLocal // Add this flag to identify the source of the audio
+      encoding: 'WAV'
     });
   } catch (error) {
-    console.error(`Error sending ${isLocal ? 'local' : 'remote'} audio for translation:`, error);
+    console.error('Error sending audio for translation:', error);
   }
 };
 
@@ -232,38 +196,19 @@ const writeString = (view, offset, string) => {
   }
 };
 
-  const cleanupAudioProcessing = (streamType) => {
-    if (streamType === 'local' || !streamType) {
-      if (processorNodeRef.current) {
-        processorNodeRef.current.disconnect();
-        processorNodeRef.current = null;
-      }
-      if (sourceNodeRef.current) {
-        sourceNodeRef.current.disconnect();
-        sourceNodeRef.current = null;
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-        audioContextRef.current = null;
-      }
+  const cleanupAudioProcessing = () => {
+    if (processorNodeRef.current) {
+      processorNodeRef.current.disconnect();
+      processorNodeRef.current = null;
     }
-    
-    if (streamType === 'remote' || !streamType) {
-      if (remoteProcessorNodeRef.current) {
-        remoteProcessorNodeRef.current.disconnect();
-        remoteProcessorNodeRef.current = null;
-      }
-      if (remoteSourceNodeRef.current) {
-        remoteSourceNodeRef.current.disconnect();
-        remoteSourceNodeRef.current = null;
-      }
-      if (remoteAudioContextRef.current) {
-        remoteAudioContextRef.current.close();
-        remoteAudioContextRef.current = null;
-      }
+    if (sourceNodeRef.current) {
+      sourceNodeRef.current.disconnect();
+      sourceNodeRef.current = null;
     }
-    
-    console.log(`Audio processing cleaned up for ${streamType || 'all'} stream(s)`);
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
   };
 
   // Single useEffect for video streams
