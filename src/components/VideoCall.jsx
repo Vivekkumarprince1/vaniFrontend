@@ -27,40 +27,75 @@ const VideoCall = ({
   const lastProcessedTime = useRef(0);
   const PROCESS_INTERVAL = 1000; 
 
-  useEffect(() => {
-    if (!localStream || !peerConnection) return;
-
-    // Initialize audio processing
-    setupAudioProcessing();
-
-    return () => {
-      cleanupAudioProcessing();
+    // Add new state for translated remote audio
+    const [isRemoteAudioProcessing, setIsRemoteAudioProcessing] = useState(false);
+    const remoteAudioProcessorRef = useRef(null);
+    const remoteSourceNodeRef = useRef(null);
+    
+    // Add state to store call participant info
+    const [callParticipant, setCallParticipant] = useState(null);
+  
+    // Helper function to get the correct target user (either selectedUser or callParticipant)
+    const getTargetUser = () => {
+      // If we have call participant info, use that
+      if (callParticipant) {
+        return callParticipant;
+      }
+      // Otherwise fall back to selectedUser
+      return selectedUser;
     };
-  }, [localStream, peerConnection]);
 
-  const setupAudioProcessing = async () => {
-    try {
-      if (!socket?.connected || !selectedUser?.preferredLanguage) {
-        console.warn('Socket not connected or missing preferred language');
-        return;
-      }
+        // Add this useEffect to request participant info when component mounts
+        useEffect(() => {
+          if (!socket?.connected || !selectedUser?.id) return;
+          
+          // Request participant info from the server
+          console.log('Requesting participant info for user:', selectedUser.id);
+          socket.emit('getCallParticipantInfo', { userId: selectedUser.id });
+          
+        }, [socket, selectedUser]);
   
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
-      const audioTrack = localStream.getAudioTracks()[0];
-      
-      if (!audioTrack) {
-        console.error('No audio track found');
-        return;
-      }
+    useEffect(() => {
+      if (!localStream || !peerConnection || !remoteStream) return;
   
-      sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(new MediaStream([audioTrack]));
-      
-      // Fallback directly to ScriptProcessor as it's more reliable
-      setupScriptProcessor();
-    } catch (error) {
-      console.error('Audio processing setup failed:', error);
-    }
-  };
+      // Initialize audio processing for both local and remote streams
+      setupAudioProcessing();
+      setupRemoteAudioProcessing();
+  
+      return () => {
+        cleanupAudioProcessing();
+        cleanupRemoteAudioProcessing();
+      };
+    }, [localStream, peerConnection, remoteStream, callParticipant]);
+  
+    const setupAudioProcessing = async () => {
+      try {
+        // Initialize audio context regardless of user info
+        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+        const audioTrack = localStream.getAudioTracks()[0];
+        
+        if (!audioTrack) {
+          console.error('No audio track found');
+          return;
+        }
+        
+        // Check socket connection
+        if (!socket?.connected) {
+          console.warn('Socket not connected, audio processing may not work properly');
+        }
+        
+        // Log target user info for debugging
+        const targetUser = getTargetUser();
+        console.log('Setting up audio processing with target user:', targetUser);
+    
+        sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(new MediaStream([audioTrack]));
+        
+        // Fallback directly to ScriptProcessor as it's more reliable
+        setupScriptProcessor();
+      } catch (error) {
+        console.error('Audio processing setup failed:', error);
+      }
+    };
   
   const setupScriptProcessor = () => {
     // Use a larger buffer size for more reliable processing
@@ -104,63 +139,151 @@ const VideoCall = ({
     processorNodeRef.current.connect(audioContextRef.current.destination);
   };
 
+  const setupRemoteAudioProcessing = async () => {
+    try {
+      if (!socket?.connected || !currentLanguage) {
+        console.warn('Socket not connected or missing current language');
+        return;
+      }
 
+      const remoteAudioTrack = remoteStream.getAudioTracks()[0];
+      if (!remoteAudioTrack) {
+        console.error('No remote audio track found');
+        return;
+      }
 
+      remoteSourceNodeRef.current = audioContextRef.current.createMediaStreamSource(new MediaStream([remoteAudioTrack]));
+      setupRemoteScriptProcessor();
+    } catch (error) {
+      console.error('Remote audio processing setup failed:', error);
+    }
+  };
 
+  const setupRemoteScriptProcessor = () => {
+    remoteAudioProcessorRef.current = audioContextRef.current.createScriptProcessor(8192, 1, 1);
+    let remoteAudioBuffer = new Float32Array();
+    let lastRemoteProcessingTime = Date.now();
+    
+    remoteAudioProcessorRef.current.onaudioprocess = (e) => {
+      if (isRemoteAudioProcessing) return;
 
+      const inputData = e.inputBuffer.getChannelData(0);
+      const newBuffer = new Float32Array(remoteAudioBuffer.length + inputData.length);
+      newBuffer.set(remoteAudioBuffer);
+      newBuffer.set(inputData, remoteAudioBuffer.length);
+      remoteAudioBuffer = newBuffer;
+      
+      const now = Date.now();
+      if (now - lastRemoteProcessingTime >= 3000 && remoteAudioBuffer.length > 0) {
+        const hasSound = remoteAudioBuffer.some(sample => Math.abs(sample) > 0.005);
+        if (hasSound) {
+          setIsRemoteAudioProcessing(true);
+          sendRemoteAudioForTranslation(remoteAudioBuffer)
+            .finally(() => {
+              setIsRemoteAudioProcessing(false);
+              remoteAudioBuffer = new Float32Array();
+              lastRemoteProcessingTime = now;
+            });
+        } else {
+          remoteAudioBuffer = new Float32Array();
+          lastRemoteProcessingTime = now;
+        }
+      }
+    };
 
+    remoteSourceNodeRef.current.connect(remoteAudioProcessorRef.current);
+    remoteAudioProcessorRef.current.connect(audioContextRef.current.destination);
+  };
 
   const sendAudioForTranslation = async (audioData) => {
-  try {
-    // Check socket connection before proceeding
-    if (!socket?.connected) {
-      console.warn('Socket not connected, cannot send audio for translation');
-      return;
-    }
-    
-    // Convert to 16-bit PCM
-    const pcmData = new Int16Array(audioData.length);
-    for (let i = 0; i < audioData.length; i++) {
-      const s = Math.max(-1, Math.min(1, audioData[i]));
-      pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-
-    // Create WAV buffer
-    const wavBuffer = createWavBuffer(pcmData);
-    
-    // Convert to base64 safely
-    let base64Audio = '';
     try {
-      // Handle large arrays by chunking
-      const chunks = [];
-      const chunkSize = 1024;
-      for (let i = 0; i < wavBuffer.length; i += chunkSize) {
-        chunks.push(String.fromCharCode.apply(null, wavBuffer.subarray(i, i + chunkSize)));
+      // Check socket connection before proceeding
+      if (!socket?.connected) {
+        console.warn('Socket not connected, cannot send audio for translation');
+        return;
       }
-      base64Audio = btoa(chunks.join(''));
-    } catch (e) {
-      console.error('Base64 conversion error:', e);
-      return;
+      
+      const targetUser = getTargetUser();
+      // Use fallback values if target user info is missing
+      const targetLanguage = targetUser?.preferredLanguage || 'en';
+      const targetUserId = targetUser?.id || 'unknown';
+      
+      console.log('Target user for translation:', targetUser);
+      
+      // Convert to 16-bit PCM
+      const pcmData = new Int16Array(audioData.length);
+      for (let i = 0; i < audioData.length; i++) {
+        const s = Math.max(-1, Math.min(1, audioData[i]));
+        pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      // Create WAV buffer
+      const wavBuffer = createWavBuffer(pcmData);
+      
+      // Convert to base64 safely
+      let base64Audio = '';
+      try {
+        // Handle large arrays by chunking
+        const chunks = [];
+        const chunkSize = 1024;
+        for (let i = 0; i < wavBuffer.length; i += chunkSize) {
+          chunks.push(String.fromCharCode.apply(null, wavBuffer.subarray(i, i + chunkSize)));
+        }
+        base64Audio = btoa(chunks.join(''));
+      } catch (e) {
+        console.error('Base64 conversion error:', e);
+        return;
+      }
+      
+      console.log('Sending audio for translation:', {
+        sourceLanguage: currentLanguage,
+        targetLanguage: targetLanguage,
+        audioLength: wavBuffer.length
+      });
+      
+      socket.emit('translateAudio', {
+        audio: base64Audio,
+        sourceLanguage: currentLanguage,
+        targetLanguage: targetLanguage,
+        userId: targetUserId,
+        sampleRate: 16000,
+        encoding: 'WAV'
+      });
+    } catch (error) {
+      console.error('Error sending audio for translation:', error);
     }
-    
-    console.log('Sending audio for translation:', {
-      sourceLanguage: currentLanguage,
-      targetLanguage: selectedUser?.preferredLanguage || 'en',
-      audioLength: wavBuffer.length
-    });
-    
-    socket.emit('translateAudio', {
-      audio: base64Audio,
-      sourceLanguage: currentLanguage,
-      targetLanguage: selectedUser?.preferredLanguage || 'en',
-      userId: selectedUser?.id,
-      sampleRate: 16000,
-      encoding: 'WAV'
-    });
-  } catch (error) {
-    console.error('Error sending audio for translation:', error);
-  }
-};
+  };
+
+  const sendRemoteAudioForTranslation = async (audioData) => {
+    try {
+      if (!socket?.connected) return;
+      
+      const targetUser = getTargetUser();
+      // Use fallback values if target user info is missing
+      const sourceLanguage = targetUser?.preferredLanguage || 'en';
+      const targetUserId = targetUser?.id || 'unknown';
+      
+      const pcmData = new Int16Array(audioData.length);
+      for (let i = 0; i < audioData.length; i++) {
+        const s = Math.max(-1, Math.min(1, audioData[i]));
+        pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      const wavBuffer = createWavBuffer(pcmData);
+      const base64Audio = await convertToBase64(wavBuffer);
+      
+      socket.emit('translateRemoteAudio', {
+        audio: base64Audio,
+        sourceLanguage: sourceLanguage,
+        targetLanguage: currentLanguage,
+        userId: targetUserId,
+        sampleRate: 16000,
+        encoding: 'WAV'
+      });
+    } catch (error) {
+      console.error('Error sending remote audio for translation:', error);
+    }
+  };
 
 const createWavBuffer = (pcmData) => {
   const header = new ArrayBuffer(44);
@@ -196,6 +319,15 @@ const writeString = (view, offset, string) => {
   }
 };
 
+const convertToBase64 = async (buffer) => {
+  const chunks = [];
+  const chunkSize = 1024;
+  for (let i = 0; i < buffer.length; i += chunkSize) {
+    chunks.push(String.fromCharCode.apply(null, buffer.subarray(i, i + chunkSize)));
+  }
+  return btoa(chunks.join(''));
+};
+
   const cleanupAudioProcessing = () => {
     if (processorNodeRef.current) {
       processorNodeRef.current.disconnect();
@@ -208,6 +340,17 @@ const writeString = (view, offset, string) => {
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
+    }
+  };
+
+  const cleanupRemoteAudioProcessing = () => {
+    if (remoteAudioProcessorRef.current) {
+      remoteAudioProcessorRef.current.disconnect();
+      remoteAudioProcessorRef.current = null;
+    }
+    if (remoteSourceNodeRef.current) {
+      remoteSourceNodeRef.current.disconnect();
+      remoteSourceNodeRef.current = null;
     }
   };
 
@@ -296,62 +439,92 @@ const writeString = (view, offset, string) => {
     };
 }, [localStream, remoteStream]);
 
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleTranslatedAudio = async (data) => {
-      // Check if data has the expected structure
-      if (!data) {
-        console.error('Received empty data in handleTranslatedAudio');
-        return;
-      }
-
-      // Extract text and audio from the data
-      const { text, audio } = data;
-      
-      if (text) {
-        setTranscribedText(text.original || '');
-        setTranslatedText(text.translated || '');
-      }
-
-      if (audio) {
-        try {
-          console.log('Received translated audio data, length:', audio.length);
+  // useEffect(() => {
+    // Add this to the useEffect that listens for socket events
+    useEffect(() => {
+        if (!socket) return;
+    
+        const handleTranslatedAudio = async (data) => {
+          // Check if data has the expected structure
+          if (!data) {
+            console.error('Received empty data in handleTranslatedAudio');
+            return;
+          }
+    
+          // Extract text and audio from the data
+          const { text, audio } = data;
           
-          // Create new audio mixer
-          const mixer = new AudioMixer();
-          
-          // Directly play the translated audio using the playTranslatedAudio method
-          await mixer.playTranslatedAudio(audio);
-          console.log('Playing translated audio directly');
-          
-          // We don't need to replace the WebRTC track for translated audio
-          // as it should be played directly to the user
-        } catch (err) {
-          console.error('Error processing translated audio:', err);
-        }
-      }
-    };
+          if (text) {
+            setTranscribedText(text.original || '');
+            setTranslatedText(text.translated || '');
+          }
+    
+          if (audio) {
+            try {
+              console.log('Received translated audio data, length:', audio.length);
+              
+              // Create new audio mixer
+              const mixer = new AudioMixer();
+              
+              // Directly play the translated audio using the playTranslatedAudio method
+              await mixer.playTranslatedAudio(audio);
+              console.log('Playing translated audio directly');
+              
+              // We don't need to replace the WebRTC track for translated audio
+              // as it should be played directly to the user
+            } catch (err) {
+              console.error('Error processing translated audio:', err);
+            }
+          }
+        };
+    
+        // Add these event listeners to capture call participant info
+        socket.on('incomingCall', (data) => {
+          console.log('Incoming call data:', data);
+          if (data.caller) {
+            setCallParticipant(data.caller);
+          }
+        });
+        
+        socket.on('callAccepted', (data) => {
+          console.log('Call accepted data:', data);
+          if (data.receiver) {
+            setCallParticipant(data.receiver);
+          }
+        });
+        
+        socket.on('translatedAudio', handleTranslatedAudio);
+        socket.on('audioTranscript', ({ text, isLocal }) => {
+          if (isLocal) {
+            setLocalTranscript(text);
+          } else {
+            setRemoteTranscript(text);
+          }
+        });
+        
+        // Add listener for call participant info
+        socket.on('callParticipantInfo', (data) => {
+          console.log('Received call participant info:', data);
+          if (data.participantInfo) {
+            setCallParticipant(data.participantInfo);
+          }
+        });
+        
+        socket.on('disconnect', () => {
+          console.warn('Socket disconnected, attempting to reconnect...');
+          socket.connect();
+        });
+    
+        return () => {
+          socket.off('translatedAudio', handleTranslatedAudio);
+          socket.off('audioTranscript');
+          socket.off('callParticipantInfo');
+          socket.off('incomingCall');
+          socket.off('callAccepted');
+          socket.off('disconnect');
+        };
+      }, [socket, peerConnection, remoteStream]);
 
-    socket.on('translatedAudio', handleTranslatedAudio);
-    socket.on('audioTranscript', ({ text, isLocal }) => {
-      if (isLocal) {
-        setLocalTranscript(text);
-      } else {
-        setRemoteTranscript(text);
-      }
-    });
-    socket.on('disconnect', () => {
-      console.warn('Socket disconnected, attempting to reconnect...');
-      socket.connect();
-    });
-
-    return () => {
-      socket.off('translatedAudio', handleTranslatedAudio);
-      socket.off('audioTranscript');
-      socket.off('disconnect');
-    };
-  }, [socket, peerConnection, remoteStream]);
 
   return (
     <div className="relative h-[calc(100vh-220px)] rounded-lg p-4 overflow-hidden bg-black flex flex-col">

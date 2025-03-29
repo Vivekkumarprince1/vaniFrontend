@@ -35,6 +35,8 @@ const Dashboard = () => {
     const [isTyping, setIsTyping] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
     const [isCameraOff, setIsCameraOff] = useState(false);
+    const [callInfo, setCallInfo] = useState(null);
+    const [preCallLanguage, setPreCallLanguage] = useState(null);
 
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
@@ -431,11 +433,6 @@ const Dashboard = () => {
         }
     };
 
-
-
-
-
-
     // Enhanced function to get user media with optimized constraints
     const getOptimizedUserMedia = async (type = 'video') => {
         const constraints = {
@@ -489,9 +486,6 @@ const Dashboard = () => {
             throw error;
         }
     };
-
-
-
 
     // Start call
     const startCall = async (type = 'video') => {
@@ -554,11 +548,22 @@ const Dashboard = () => {
                 checkState();
             });
 
-            // Send offer
+            // Create complete caller info object
+            const callerInfo = {
+                id: user.id,
+                name: user.username,
+                preferredLanguage: currentLanguage,
+                status: 'online',
+                avatar: user.username?.charAt(0).toUpperCase()
+            };
+
+            console.log('Sending call with caller info:', callerInfo);
+
             socket.emit('offer', {
                 targetId: selectedUser.socketId,
                 offer: pc.localDescription,
-                type
+                type,
+                callerInfo
             });
 
             setIsCallActive(true);
@@ -572,14 +577,27 @@ const Dashboard = () => {
 
     // Answer call
     const answerCall = async () => {
-        if (!incomingCall) return;
-
+        if (!incomingCall || !callInfo) return;
+        
         try {
+            // Lock in the caller's info for the duration of the call
+            console.log('Answering call with caller info:', callInfo);
+            
+            // Rest of answer call logic
             // Clean up any existing call
             endCall();
 
             // Create new peer connection
             const pc = await setupWebRTC();
+            
+            // Extract caller info from incoming call
+            const callerInfo = incomingCall.callerInfo;
+            
+            // Store caller info as the selected user for the receiver
+            if (callerInfo) {
+                console.log("callerInfo:",callerInfo)
+                setCallParticipant(callerInfo);
+            }
 
             // Get local stream with user's camera and microphone
             const stream = await getOptimizedUserMedia(incomingCall.type);
@@ -622,10 +640,18 @@ const Dashboard = () => {
                 checkState();
             });
 
-            // Send answer to caller
+            // Create receiver info to send with the answer
+            const receiverInfo = {
+                id: user.id,
+                name: user.username,
+                preferredLanguage: currentLanguage
+            };
+
+            // Send answer to caller with receiver info
             socket.emit('answer', {
                 targetId: incomingCall.from,
-                answer: pc.localDescription
+                answer: pc.localDescription,
+                receiverInfo
             });
 
             setIsCallActive(true);
@@ -689,6 +715,13 @@ const Dashboard = () => {
         setIsCameraOff(false);
 
         console.log('Call ended and resources cleaned up');
+        
+        // Reset call info and restore language
+        if (preCallLanguage) {
+            changeLanguage(preCallLanguage);
+        }
+        setCallInfo(null);
+        setPreCallLanguage(null);
     };
 
     // Handle call errors
@@ -756,6 +789,60 @@ const Dashboard = () => {
         const date = new Date(timestamp);
         return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
+
+    // Add this effect to handle incoming calls
+    useEffect(() => {
+        if (!socket) return;
+
+        socket.on('incomingCall', (data) => {
+            console.log('Incoming call with data:', data);
+            if (!data.caller) {
+                console.error('Missing caller info in incoming call');
+                return;
+            }
+
+            // Save current language
+            setPreCallLanguage(currentLanguage);
+
+            // Store complete caller info
+            const callerInfo = {
+                id: data.caller.id,
+                name: data.caller.name || 'Unknown',
+                socketId: data.from,
+                preferredLanguage: data.caller.preferredLanguage,
+                status: 'online',
+                avatar: data.caller.avatar || data.caller.name?.charAt(0).toUpperCase()
+            };
+
+            console.log('Setting caller info:', callerInfo);
+            setCallInfo(callerInfo);
+            
+            // Update selected user with caller info
+            setSelectedUser(callerInfo);
+
+            // Set incoming call with complete info
+            setIncomingCall({
+                offer: data.offer,
+                type: data.type,
+                from: data.from,
+                caller: callerInfo
+            });
+        });
+
+        socket.on('callEnded', () => {
+            // Restore original language
+            if (preCallLanguage) {
+                changeLanguage(preCallLanguage);
+            }
+            setCallInfo(null);
+            setPreCallLanguage(null);
+        });
+
+        return () => {
+            socket.off('incomingCall');
+            socket.off('callEnded');
+        };
+    }, [socket, currentLanguage]);
 
     if (!isAuthenticated) {
         return <div className="loading">Loading...</div>;
