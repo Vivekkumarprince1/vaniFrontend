@@ -81,10 +81,7 @@ export const LanguagePreferences = ({ selectedLanguage, onLanguageChange }) => {
   }
 
   return (
-    <div className="flex justify-center items-center w-full max-w-xs">
-      <label className="block text-sm font-medium text-gray-700 mb-2">
-        Preferred Language
-      </label>
+    <div className=" w-48">
       <Select
         value={languages.find(lang => lang.value === selectedLanguage)}
         onChange={handleLanguageChange}
@@ -93,7 +90,7 @@ export const LanguagePreferences = ({ selectedLanguage, onLanguageChange }) => {
         classNamePrefix="select"
         isSearchable={true}
         name="language"
-        placeholder="Select your preferred language"
+        placeholder="Language"
         components={{ Option: customOption }}
         formatOptionLabel={(option) => (
           <div className="flex items-center">
@@ -104,4 +101,4 @@ export const LanguagePreferences = ({ selectedLanguage, onLanguageChange }) => {
       />
     </div>
   );
-}; 
+};

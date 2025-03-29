@@ -27,7 +27,7 @@ const Header = ({ user, toggleSidebar, handleLanguageChange }) => {
                 <h1 className="text-xl font-semibold tracking-wide">{t('welcome')}</h1>
             </div>
             <div className="flex items-center space-x-4">
-                <div className="hidden sm:block">
+                <div className="flex-shrink-0">
                     <LanguagePreferences
                         selectedLanguage={currentLanguage}
                         onLanguageChange={handleLanguageChange}
@@ -53,4 +53,4 @@ const Header = ({ user, toggleSidebar, handleLanguageChange }) => {
     );
 };
 
-export default Header; 
+export default Header;
