@@ -461,7 +461,18 @@ const convertToBase64 = async (buffer) => {
     
           if (audio) {
             try {
-              console.log('Received translated audio data, length:', audio.length);
+              console.log('Received translated audio data, length:', audio.length, 'type:', typeof audio);
+              
+              // Additional validation for audio data
+              if (typeof audio !== 'string') {
+                console.error('Unexpected audio data type:', typeof audio);
+                throw new Error('Unexpected audio data type');
+              }
+              
+              if (audio.length < 100) {
+                console.error('Audio data too short:', audio.length);
+                throw new Error('Audio data too short');
+              }
               
               // Create new audio mixer
               const mixer = new AudioMixer();
@@ -475,6 +486,8 @@ const convertToBase64 = async (buffer) => {
             } catch (err) {
               console.error('Error processing translated audio:', err);
             }
+          } else {
+            console.warn('No audio data received in translatedAudio event');
           }
         };
     
@@ -580,7 +593,7 @@ const convertToBase64 = async (buffer) => {
       {/* Translation overlay */}
       <div className="absolute bottom-20 left-0 right-0 bg-black bg-opacity-50 p-4 text-white">
         <div className="mb-2">
-          <span className="text-sm text-gray-300">You said:</span>
+          <span className="text-sm text-gray-300">remote:</span>
           <p className="text-lg">{transcribedText}</p>
         </div>
         <div>

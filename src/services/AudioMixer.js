@@ -35,34 +35,78 @@ class AudioMixer {
     try {
       // Resume audio context if it's suspended (needed for autoplay policies)
       if (this.audioContext.state === 'suspended') {
+        console.log('Resuming suspended audio context');
         await this.audioContext.resume();
+      }
+      
+      // Enhanced validation for audio data
+      if (!audioData) {
+        console.error('Audio data is null or undefined');
+        return Promise.reject(new Error('Invalid audio data: null or undefined'));
+      }
+      
+      if (typeof audioData === 'string') {
+        if (audioData.length < 100) {
+          console.error('Audio data string is too short:', audioData.length);
+          return Promise.reject(new Error('Invalid audio data: too short'));
+        }
+        
+        // Check if it's a valid base64 string
+        try {
+          atob(audioData.slice(0, 10)); // Just test a small portion
+        } catch (e) {
+          console.error('Audio data is not a valid base64 string');
+          return Promise.reject(new Error('Invalid audio data: not a valid base64 string'));
+        }
       }
 
       // Convert base64 to array buffer if needed
       let arrayBuffer;
       if (typeof audioData === 'string') {
         try {
+          // Log the length of the base64 string for debugging
+          console.log('Processing base64 audio string of length:', audioData.length);
+          
+          // Try to decode a small portion first to validate it's proper base64
+          try {
+            atob(audioData.substring(0, 10));
+          } catch (e) {
+            console.error('Invalid base64 encoding detected');
+            throw new Error('Invalid base64 encoding');
+          }
+          
           // Convert base64 to array buffer with proper handling
           const binaryString = atob(audioData);
+          console.log('Binary string length after base64 decode:', binaryString.length);
+          
           const bytes = new Uint8Array(binaryString.length);
           for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
           }
           arrayBuffer = bytes.buffer;
           
-          // Log the first few bytes to debug WAV header
-          const headerView = new DataView(arrayBuffer.slice(0, 44));
-          const headerInfo = {
-            riff: String.fromCharCode(headerView.getUint8(0), headerView.getUint8(1), headerView.getUint8(2), headerView.getUint8(3)),
-            format: String.fromCharCode(headerView.getUint8(8), headerView.getUint8(9), headerView.getUint8(10), headerView.getUint8(11)),
-            sampleRate: headerView.getUint32(24, true),
-            bitsPerSample: headerView.getUint16(34, true),
-            dataChunk: String.fromCharCode(headerView.getUint8(36), headerView.getUint8(37), headerView.getUint8(38), headerView.getUint8(39))
-          };
-          console.log('WAV header check:', headerInfo);
+          // Initialize headerInfo variable outside the conditional block
+          let headerInfo = null;
+          
+          // Only try to parse header if we have enough data
+          if (arrayBuffer.byteLength >= 44) {
+            // Log the first few bytes to debug WAV header
+            const headerView = new DataView(arrayBuffer.slice(0, 44));
+            headerInfo = {
+              riff: String.fromCharCode(headerView.getUint8(0), headerView.getUint8(1), headerView.getUint8(2), headerView.getUint8(3)),
+              format: String.fromCharCode(headerView.getUint8(8), headerView.getUint8(9), headerView.getUint8(10), headerView.getUint8(11)),
+              sampleRate: headerView.getUint32(24, true),
+              bitsPerSample: headerView.getUint16(34, true),
+              dataChunk: String.fromCharCode(headerView.getUint8(36), headerView.getUint8(37), headerView.getUint8(38), headerView.getUint8(39))
+            };
+            console.log('WAV header check:', headerInfo);
+          } else {
+            console.error('Audio data too short to contain a valid WAV header');
+            throw new Error('Audio data too short for WAV format');
+          }
           
           // Verify if this is a valid WAV file
-          if (headerInfo.riff !== 'RIFF' || headerInfo.format !== 'WAVE') {
+          if (!headerInfo || headerInfo.riff !== 'RIFF' || headerInfo.format !== 'WAVE') {
             console.warn('Invalid WAV header detected, attempting to fix');
             // The data might be raw PCM without a header, or the header might be corrupted
             // Let's try to create a proper WAV header
