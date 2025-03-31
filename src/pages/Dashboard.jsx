@@ -73,22 +73,76 @@ const Dashboard = () => {
         if (!isAuthenticated || !user) return;
 
         const token = localStorage.getItem('token');
-        socket = io(API_URL, {
+        const socketOptions = {
             auth: { token },
+            path: '/socket.io',
             reconnection: true,
-            reconnectionAttempts: 5,
-            reconnectionDelay: 1000,
-            transports: ['websocket', 'polling']
+            reconnectionAttempts: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_ATTEMPTS || 5),
+            reconnectionDelay: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_DELAY || 1000),
+            reconnectionDelayMax: 10000,
+            timeout: parseInt(import.meta.env.VITE_SOCKET_TIMEOUT || 60000),
+            // Set transports explicitly - try websocket first, then fallback to polling
+            transports: ['polling', 'websocket'], // Changed order to try polling first in Azure
+            forceNew: true,
+            autoConnect: true
+        };
+        
+        console.log('Connecting to socket with options:', {
+            url: API_URL,
+            ...socketOptions
         });
+        
+        // Initialize socket with updated configuration
+        socket = io(API_URL, socketOptions);
 
         // Socket connection events
         socket.on('connect', () => {
             console.log('Socket connected with ID:', socket.id);
+            console.log('Using transport:', socket.io.engine.transport.name);
             setIsOnline(true);
             fetchUsers();
             fetchRooms();
             // Set up WebRTC after socket connection is established
             setupWebRTC();
+        });
+        
+        // Listen for transport change
+        socket.io.engine.on('upgrade', () => {
+            console.log('Socket transport upgraded to:', socket.io.engine.transport.name);
+        });
+
+        // Connection error handling
+        socket.on('connect_error', (err) => {
+            console.error('Socket connection error:', err);
+            setIsOnline(false);
+            if (err.message === 'Authentication error') {
+                localStorage.removeItem('token');
+                navigate('/login');
+            }
+            
+            // If we're having WebSocket issues, retry with polling only
+            if (err.message?.includes('websocket')) {
+                console.log('WebSocket error detected, reconnecting with polling transport only');
+                socket.disconnect();
+                
+                // Wait a moment before reconnecting
+                setTimeout(() => {
+                    socket = io(API_URL, {
+                        ...socketOptions,
+                        transports: ['polling']
+                    });
+                }, 1000);
+            }
+        });
+
+        socket.on('disconnect', (reason) => {
+            console.log('Socket disconnected, reason:', reason);
+            setIsOnline(false);
+            // Clean up WebRTC on socket disconnect
+            if (peerConnection) {
+                peerConnection.close();
+                setPeerConnection(null);
+            }
         });
 
         socket.on('userStatusChanged', (data) => {
@@ -102,31 +156,14 @@ const Dashboard = () => {
             );
         });
 
-        socket.on('connect_error', (err) => {
-            console.error('Socket connection error:', err);
-            setIsOnline(false);
-            if (err.message === 'Authentication error') {
-                localStorage.removeItem('token');
-                navigate('/login');
-            }
-        });
-
-        socket.on('disconnect', () => {
-            console.log('Socket disconnected');
-            setIsOnline(false);
-            // Clean up WebRTC on socket disconnect
-            if (peerConnection) {
-                peerConnection.close();
-                setPeerConnection(null);
-            }
-        });
-
         return () => {
             console.log('Cleaning up socket and WebRTC');
             if (socket) {
                 socket.off('connect');
                 socket.off('connect_error');
                 socket.off('disconnect');
+                socket.off('userStatusChanged');
+                socket.io.engine.off('upgrade');
                 socket.disconnect();
             }
             if (peerConnection) {

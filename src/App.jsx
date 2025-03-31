@@ -5,6 +5,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import { AuthProvider } from './contexts/AuthContext';
 import { TranslationProvider } from './contexts/TranslationContext';
+import ConnectionStatus from './components/ConnectionStatus';
 import './App.css';
 
 const App = () => {
@@ -18,6 +19,7 @@ const App = () => {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/" element={<Navigate to="/login" />} />
           </Routes>
+          <ConnectionStatus />
         </Router>
       </TranslationProvider>
     </AuthProvider>
