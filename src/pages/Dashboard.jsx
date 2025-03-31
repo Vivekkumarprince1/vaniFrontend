@@ -6,11 +6,12 @@ import { useTranslation } from '../contexts/TranslationContext';
 import Header from '../components/Header';
 import ContactList from '../components/ContactList';
 import MessageSection from '../components/MessageSection';
+import socketManager from '../utils/socketManager';
 
 // API base URL
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
-// Create socket instance
+// Variable for socket instance
 let socket;
 
 const Dashboard = () => {
@@ -73,69 +74,31 @@ const Dashboard = () => {
         if (!isAuthenticated || !user) return;
 
         const token = localStorage.getItem('token');
-        const socketOptions = {
-            auth: { token },
-            path: '/socket.io',
-            reconnection: true,
-            reconnectionAttempts: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_ATTEMPTS || 5),
-            reconnectionDelay: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_DELAY || 1000),
-            reconnectionDelayMax: 10000,
-            timeout: parseInt(import.meta.env.VITE_SOCKET_TIMEOUT || 60000),
-            // Set transports explicitly - try websocket first, then fallback to polling
-            transports: ['polling', 'websocket'], // Changed order to try polling first in Azure
-            forceNew: true,
-            autoConnect: true
-        };
+        console.log('Initializing socket connection...');
         
-        console.log('Connecting to socket with options:', {
-            url: API_URL,
-            ...socketOptions
-        });
-        
-        // Initialize socket with updated configuration
-        socket = io(API_URL, socketOptions);
+        // Initialize socket using our manager
+        socket = socketManager.initialize(token);
 
-        // Socket connection events
-        socket.on('connect', () => {
+        // Set up event handlers
+        socketManager.on('connect', () => {
             console.log('Socket connected with ID:', socket.id);
-            console.log('Using transport:', socket.io.engine.transport.name);
             setIsOnline(true);
             fetchUsers();
             fetchRooms();
             // Set up WebRTC after socket connection is established
             setupWebRTC();
         });
-        
-        // Listen for transport change
-        socket.io.engine.on('upgrade', () => {
-            console.log('Socket transport upgraded to:', socket.io.engine.transport.name);
-        });
 
-        // Connection error handling
-        socket.on('connect_error', (err) => {
+        socketManager.on('connect_error', (err) => {
             console.error('Socket connection error:', err);
             setIsOnline(false);
             if (err.message === 'Authentication error') {
                 localStorage.removeItem('token');
                 navigate('/login');
             }
-            
-            // If we're having WebSocket issues, retry with polling only
-            if (err.message?.includes('websocket')) {
-                console.log('WebSocket error detected, reconnecting with polling transport only');
-                socket.disconnect();
-                
-                // Wait a moment before reconnecting
-                setTimeout(() => {
-                    socket = io(API_URL, {
-                        ...socketOptions,
-                        transports: ['polling']
-                    });
-                }, 1000);
-            }
         });
 
-        socket.on('disconnect', (reason) => {
+        socketManager.on('disconnect', (reason) => {
             console.log('Socket disconnected, reason:', reason);
             setIsOnline(false);
             // Clean up WebRTC on socket disconnect
@@ -145,7 +108,7 @@ const Dashboard = () => {
             }
         });
 
-        socket.on('userStatusChanged', (data) => {
+        socketManager.on('userStatusChanged', (data) => {
             console.log('User status changed:', data);
             setUsers(prevUsers =>
                 prevUsers.map(u =>
@@ -158,14 +121,16 @@ const Dashboard = () => {
 
         return () => {
             console.log('Cleaning up socket and WebRTC');
-            if (socket) {
-                socket.off('connect');
-                socket.off('connect_error');
-                socket.off('disconnect');
-                socket.off('userStatusChanged');
-                socket.io.engine.off('upgrade');
-                socket.disconnect();
-            }
+            // Remove all event listeners
+            socketManager.off('connect');
+            socketManager.off('connect_error');
+            socketManager.off('disconnect');
+            socketManager.off('userStatusChanged');
+            
+            // Clean up socket
+            socketManager.cleanup();
+            
+            // Clean up WebRTC
             if (peerConnection) {
                 peerConnection.close();
                 setPeerConnection(null);
@@ -181,7 +146,7 @@ const Dashboard = () => {
     useEffect(() => {
         if (!socket) return;
 
-        socket.on('receiveMessage', (message) => {
+        socketManager.on('receiveMessage', (message) => {
             setMessages(prevMessages => {
                 const exists = prevMessages.some(msg => msg._id === message._id);
                 if (exists) return prevMessages;
@@ -189,13 +154,13 @@ const Dashboard = () => {
             });
         });
 
-        socket.on('userJoined', fetchUsers);
-        socket.on('userLeft', fetchUsers);
+        socketManager.on('userJoined', fetchUsers);
+        socketManager.on('userLeft', fetchUsers);
 
         return () => {
-            socket.off('receiveMessage');
-            socket.off('userJoined');
-            socket.off('userLeft');
+            socketManager.off('receiveMessage');
+            socketManager.off('userJoined');
+            socketManager.off('userLeft');
         };
     }, [socket]);
 
@@ -282,7 +247,7 @@ const Dashboard = () => {
             pc.onicecandidate = (event) => {
                 if (event.candidate && socket && selectedUser) {
                     console.log('Sending ICE candidate:', event.candidate);
-                    socket.emit('iceCandidate', {
+                    socketManager.emit('iceCandidate', {
                         candidate: event.candidate,
                         targetId: selectedUser.socketId
                     });
@@ -310,12 +275,12 @@ const Dashboard = () => {
             // Set up socket event handlers for signaling
             if (socket) {
                 // Remove existing listeners first
-                socket.off('offer');
-                socket.off('answer');
-                socket.off('iceCandidate');
+                socketManager.off('offer');
+                socketManager.off('answer');
+                socketManager.off('iceCandidate');
 
                 // Handle incoming offers
-                socket.on('offer', async ({ offer, from, type }) => {
+                socketManager.on('offer', async ({ offer, from, type }) => {
                     console.log('Received offer from:', from, 'type:', type);
                     if (pc.signalingState !== 'stable') {
                         console.log('Cannot handle offer in state:', pc.signalingState);
@@ -325,7 +290,7 @@ const Dashboard = () => {
                 });
 
                 // Handle incoming answers
-                socket.on('answer', async ({ answer }) => {
+                socketManager.on('answer', async ({ answer }) => {
                     console.log('Received answer, signaling state:', pc.signalingState);
                     try {
                         if (pc && pc.signalingState !== 'closed') {
@@ -338,7 +303,7 @@ const Dashboard = () => {
                 });
 
                 // Handle incoming ICE candidates
-                socket.on('iceCandidate', async ({ candidate }) => {
+                socketManager.on('iceCandidate', async ({ candidate }) => {
                     console.log('Received ICE candidate');
                     try {
                         if (pc && pc.remoteDescription) {
@@ -448,7 +413,7 @@ const Dashboard = () => {
                     return;
                 }
 
-                socket.emit('sendMessage', messageData);
+                socketManager.emit('sendMessage', messageData);
             }
 
             if (file) {
@@ -596,7 +561,7 @@ const Dashboard = () => {
 
             console.log('Sending call with caller info:', callerInfo);
 
-            socket.emit('offer', {
+            socketManager.emit('offer', {
                 targetId: selectedUser.socketId,
                 offer: pc.localDescription,
                 type,
@@ -685,7 +650,7 @@ const Dashboard = () => {
             };
 
             // Send answer to caller with receiver info
-            socket.emit('answer', {
+            socketManager.emit('answer', {
                 targetId: incomingCall.from,
                 answer: pc.localDescription,
                 receiverInfo
@@ -731,9 +696,9 @@ const Dashboard = () => {
 
         // Clean up socket listeners if needed
         if (socket) {
-            socket.off('offer');
-            socket.off('answer');
-            socket.off('iceCandidate');
+            socketManager.off('offer');
+            socketManager.off('answer');
+            socketManager.off('iceCandidate');
         }
 
         // Reset video refs
@@ -804,7 +769,7 @@ const Dashboard = () => {
         setSelectedRoom(room);
         setSelectedUser(null);
         setShowSidebar(false);
-        socket.emit('joinRoom', room);
+        socketManager.emit('joinRoom', room);
     };
 
     // Create room
@@ -831,7 +796,7 @@ const Dashboard = () => {
     useEffect(() => {
         if (!socket) return;
 
-        socket.on('incomingCall', (data) => {
+        socketManager.on('incomingCall', (data) => {
             console.log('Incoming call with data:', data);
             if (!data.caller) {
                 console.error('Missing caller info in incoming call');
@@ -866,7 +831,7 @@ const Dashboard = () => {
             });
         });
 
-        socket.on('callEnded', () => {
+        socketManager.on('callEnded', () => {
             // Restore original language
             if (preCallLanguage) {
                 changeLanguage(preCallLanguage);
@@ -876,8 +841,8 @@ const Dashboard = () => {
         });
 
         return () => {
-            socket.off('incomingCall');
-            socket.off('callEnded');
+            socketManager.off('incomingCall');
+            socketManager.off('callEnded');
         };
     }, [socket, currentLanguage]);
 
