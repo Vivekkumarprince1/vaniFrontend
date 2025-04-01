@@ -14,11 +14,8 @@ class SocketManager {
     this.eventHandlers = new Map();
     this.isConnected = false;
     this.attemptCount = 0;
-    this.maxAttempts = parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_ATTEMPTS || 15);
+    this.maxAttempts = parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_ATTEMPTS || 10);
     this.useWebSocket = true; // Start with WebSockets enabled
-    this.reconnectTimer = null;
-    this.reconnecting = false;
-    this.connectionStabilityTimer = null;
   }
 
   /**
@@ -40,14 +37,8 @@ class SocketManager {
       this.cleanup();
     }
 
-    // Clear any pending reconnect timers
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
     const transportOptions = this.useWebSocket 
-      ? ['websocket', 'polling'] // Try websocket first, then fallback to polling
+      ? ['polling', 'websocket'] // Try polling first, then upgrade to websocket
       : ['polling']; // Fallback to polling only if WebSockets fail
     
     const socketOptions = {
@@ -55,9 +46,8 @@ class SocketManager {
       path: '/socket.io',
       reconnection: true,
       reconnectionAttempts: this.maxAttempts,
-      reconnectionDelay: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_DELAY || 1000),
+      reconnectionDelay: parseInt(import.meta.env.VITE_SOCKET_RECONNECTION_DELAY || 2000),
       reconnectionDelayMax: 10000,
-      randomizationFactor: 0.5, // Add randomization for exponential backoff
       timeout: parseInt(import.meta.env.VITE_SOCKET_TIMEOUT || 60000),
       transports: transportOptions,
       forceNew: true,
@@ -83,22 +73,6 @@ class SocketManager {
       console.log(`Using transport: ${this.socket.io.engine.transport.name}`);
       this.isConnected = true;
       this.attemptCount = 0;
-      this.reconnecting = false;
-      
-      // Set up a timer to monitor connection stability
-      if (this.connectionStabilityTimer) {
-        clearInterval(this.connectionStabilityTimer);
-      }
-      
-      this.connectionStabilityTimer = setInterval(() => {
-        // Check if still connected, if not attempt to reconnect
-        if (this.socket && !this.socket.connected && !this.reconnecting) {
-          console.log("Detected disconnection, attempting to reconnect...");
-          this.reconnecting = true;
-          this.socket.connect();
-        }
-      }, 30000); // Check every 30 seconds
-      
       this.triggerEvent('connect');
     });
 
@@ -121,65 +95,16 @@ class SocketManager {
         this.useWebSocket = false;
         this.socket.disconnect();
         
-        // Wait before reconnecting with exponential backoff
-        const reconnectDelay = Math.min(
-          1000 * Math.pow(1.5, this.attemptCount), 
-          60000
-        ); // Max 1 minute delay
-        
-        console.log(`Reconnecting in ${reconnectDelay/1000} seconds...`);
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnecting = true;
+        // Wait before reconnecting
+        setTimeout(() => {
           this.connect();
-        }, reconnectDelay);
+        }, 1000);
       }
-    });
-
-    this.socket.on('reconnect_attempt', (attemptNumber) => {
-      console.log(`Reconnection attempt ${attemptNumber}/${this.maxAttempts}`);
-      this.reconnecting = true;
-    });
-    
-    this.socket.on('reconnect', () => {
-      console.log('Socket reconnected successfully');
-      this.isConnected = true;
-      this.reconnecting = false;
-      this.triggerEvent('reconnect');
-    });
-    
-    this.socket.on('reconnect_error', (err) => {
-      console.error('Socket reconnection error:', err);
-    });
-    
-    this.socket.on('reconnect_failed', () => {
-      console.error('Socket reconnection failed after max attempts');
-      // Try one more time with different transport options
-      this.useWebSocket = !this.useWebSocket;
-      this.reconnectTimer = setTimeout(() => {
-        console.log('Trying final reconnection with different transport');
-        this.reconnecting = true;
-        this.connect();
-      }, 5000);
     });
 
     this.socket.on('disconnect', (reason) => {
       console.log(`Socket disconnected. Reason: ${reason}`);
       this.isConnected = false;
-      
-      // Handle various disconnect reasons differently
-      if (reason === 'io server disconnect') {
-        // The server has forcefully disconnected the socket
-        console.log('Server disconnected the socket, reconnecting...');
-        this.reconnecting = true;
-        this.socket.connect();
-      } else if (reason === 'io client disconnect') {
-        // The socket was manually disconnected, don't reconnect
-        console.log('Socket manually disconnected, not reconnecting');
-      } else {
-        // Handle other disconnect reasons
-        console.log(`Disconnected: ${reason}, letting socket.io handle reconnection`);
-      }
-      
       this.triggerEvent('disconnect', reason);
     });
 
@@ -271,47 +196,12 @@ class SocketManager {
    * Clean up the socket connection
    */
   cleanup() {
-    // Clear any timers
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    
-    if (this.connectionStabilityTimer) {
-      clearInterval(this.connectionStabilityTimer);
-      this.connectionStabilityTimer = null;
-    }
-    
     if (this.socket) {
       console.log('Cleaning up socket connection');
-      
-      try {
-        // Remove all listeners to prevent memory leaks
-        this.socket.removeAllListeners();
-        
-        // Only attempt to remove engine listeners if the connection was established
-        if (this.socket.io && this.socket.io.engine) {
-          try {
-            this.socket.io.removeAllListeners();
-            this.socket.io.engine.removeAllListeners();
-          } catch (err) {
-            console.log('Could not remove engine listeners:', err.message);
-          }
-        }
-        
-        // Only disconnect if the socket exists and isn't already disconnecting
-        if (this.socket.connected) {
-          this.socket.disconnect();
-        }
-      } catch (err) {
-        console.error('Error during socket cleanup:', err);
-      }
-      
+      this.socket.disconnect();
       this.socket = null;
     }
-    
     this.isConnected = false;
-    this.reconnecting = false;
   }
 
   /**
