@@ -131,7 +131,7 @@ const ConnectionStatus = () => {
     }));
     
     // Try to reload the page if it's been a while
-    if (prev.retryCount > 3) {
+    if (connectionState.retryCount > 3) {
       window.location.reload();
     }
   };

@@ -73,71 +73,112 @@ const Dashboard = () => {
     useEffect(() => {
         if (!isAuthenticated || !user) return;
 
-        const token = localStorage.getItem('token');
-        console.log('Initializing socket connection...');
-        
-        // Initialize socket using our manager
-        socket = socketManager.initialize(token);
+        let socketInitialized = false;
+        let cleanupFunction = null;
 
-        // Set up event handlers
-        socketManager.on('connect', () => {
-            console.log('Socket connected with ID:', socket.id);
-            setIsOnline(true);
-            fetchUsers();
-            fetchRooms();
-            // Set up WebRTC after socket connection is established
-            setupWebRTC();
-        });
+        // Initialize socket connection with a slight delay to prevent rapid connect/disconnect cycles
+        const initTimer = setTimeout(() => {
+            const token = localStorage.getItem('token');
+            console.log('Initializing socket connection...');
+            
+            // Initialize socket using our manager
+            socket = socketManager.initialize(token);
+            socketInitialized = true;
 
-        socketManager.on('connect_error', (err) => {
-            console.error('Socket connection error:', err);
-            setIsOnline(false);
-            if (err.message === 'Authentication error') {
-                localStorage.removeItem('token');
-                navigate('/login');
-            }
-        });
+            // Set up event handlers
+            socketManager.on('connect', () => {
+                console.log('Socket connected with ID:', socket.id);
+                setIsOnline(true);
+                fetchUsers();
+                fetchRooms();
+                // Set up WebRTC after socket connection is established
+                setupWebRTC();
+            });
 
-        socketManager.on('disconnect', (reason) => {
-            console.log('Socket disconnected, reason:', reason);
-            setIsOnline(false);
-            // Clean up WebRTC on socket disconnect
-            if (peerConnection) {
-                peerConnection.close();
-                setPeerConnection(null);
-            }
-        });
+            socketManager.on('connect_error', (err) => {
+                console.error('Socket connection error:', err);
+                setIsOnline(false);
+                if (err.message === 'Authentication error') {
+                    localStorage.removeItem('token');
+                    navigate('/login');
+                }
+            });
 
-        socketManager.on('userStatusChanged', (data) => {
-            console.log('User status changed:', data);
-            setUsers(prevUsers =>
-                prevUsers.map(u =>
-                    u.id === data.userId
-                        ? { ...u, socketId: data.socketId, status: data.status }
-                        : u
-                )
-            );
-        });
+            socketManager.on('reconnect', () => {
+                console.log('Socket reconnected');
+                setIsOnline(true);
+                // Refresh data after reconnection
+                fetchUsers();
+                fetchRooms();
+            });
 
+            socketManager.on('disconnect', (reason) => {
+                console.log('Socket disconnected, reason:', reason);
+                // Only set offline for permanent disconnects
+                if (['transport close', 'ping timeout', 'io server disconnect'].includes(reason)) {
+                    setIsOnline(false);
+                }
+                
+                // Clean up WebRTC on socket disconnect
+                if (peerConnection) {
+                    peerConnection.close();
+                    setPeerConnection(null);
+                }
+            });
+
+            socketManager.on('userStatusChanged', (data) => {
+                console.log('User status changed:', data);
+                setUsers(prevUsers =>
+                    prevUsers.map(u =>
+                        u.id === data.userId
+                            ? { ...u, socketId: data.socketId, status: data.status }
+                            : u
+                    )
+                );
+            });
+
+            // Set up an interval to refresh user statuses periodically
+            const statusRefreshInterval = setInterval(() => {
+                if (isOnline) {
+                    fetchUsers();
+                }
+            }, 60000); // Every minute
+
+            // Store cleanup function
+            cleanupFunction = () => {
+                console.log('Cleaning up socket and WebRTC');
+                clearInterval(statusRefreshInterval);
+                
+                // Remove all event listeners
+                socketManager.off('connect');
+                socketManager.off('connect_error');
+                socketManager.off('reconnect');
+                socketManager.off('disconnect');
+                socketManager.off('userStatusChanged');
+                
+                // Clean up socket
+                if (socketInitialized) {
+                    socketManager.cleanup();
+                }
+                
+                // Clean up WebRTC
+                if (peerConnection) {
+                    peerConnection.close();
+                    setPeerConnection(null);
+                }
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                    setLocalStream(null);
+                }
+            };
+        }, 300); // Small delay to prevent rapid initialization/cleanup cycles
+
+        // Return cleanup function
         return () => {
-            console.log('Cleaning up socket and WebRTC');
-            // Remove all event listeners
-            socketManager.off('connect');
-            socketManager.off('connect_error');
-            socketManager.off('disconnect');
-            socketManager.off('userStatusChanged');
+            clearTimeout(initTimer); // Clear initialization timer if component unmounts quickly
             
-            // Clean up socket
-            socketManager.cleanup();
-            
-            // Clean up WebRTC
-            if (peerConnection) {
-                peerConnection.close();
-                setPeerConnection(null);
-            }
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                setLocalStream(null);
+            if (cleanupFunction) {
+                cleanupFunction();
             }
         };
     }, [isAuthenticated, user, navigate]);
@@ -326,8 +367,8 @@ const Dashboard = () => {
         }
     };
 
-    // Fetch users
-    const fetchUsers = async () => {
+    // Fetch users with retry mechanism
+    const fetchUsers = async (retryCount = 0) => {
         try {
             const res = await axios.get(`${API_URL}/api/auth/users`);
             const filteredUsers = res.data.filter(u => u._id !== user?.id);
@@ -343,29 +384,28 @@ const Dashboard = () => {
             setUsers(mappedUsers);
         } catch (error) {
             console.error('Error fetching users:', error);
+            // Retry up to 3 times with exponential backoff
+            if (retryCount < 3 && isOnline) {
+                const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+                console.log(`Retrying fetchUsers in ${delay}ms...`);
+                setTimeout(() => fetchUsers(retryCount + 1), delay);
+            }
         }
     };
 
-    // Add an interval to refresh user statuses
-    useEffect(() => {
-        if (!isAuthenticated) return;
-
-        // Initial fetch
-        fetchUsers();
-
-        // Set up periodic refresh
-        const interval = setInterval(fetchUsers, 30000); // Every 30 seconds
-
-        return () => clearInterval(interval);
-    }, [isAuthenticated, user]);
-
     // Fetch rooms
-    const fetchRooms = async () => {
+    const fetchRooms = async (retryCount = 0) => {
         try {
             const res = await axios.get(`${API_URL}/api/chat/rooms`);
             setRooms(res.data);
         } catch (error) {
             console.error('Error fetching rooms:', error);
+            // Retry up to 3 times with exponential backoff
+            if (retryCount < 3 && isOnline) {
+                const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+                console.log(`Retrying fetchRooms in ${delay}ms...`);
+                setTimeout(() => fetchRooms(retryCount + 1), delay);
+            }
         }
     };
 

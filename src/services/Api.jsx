@@ -101,9 +101,18 @@ checkBackendHealth();
 
 // Schedule periodic health checks
 setInterval(() => {
-  // Only check if we've had a problem
+  // Only check if we've had a problem or as regular health check
   if (!serviceState.isBackendAvailable || serviceState.connectionErrors > 0) {
     checkBackendHealth();
+  } else {
+    // Check periodically anyway (every 2 minutes) to ensure connection stays alive
+    const timeSinceLastCheck = serviceState.lastConnectionAttempt 
+      ? new Date() - new Date(serviceState.lastConnectionAttempt) 
+      : Infinity;
+    
+    if (timeSinceLastCheck > 120000) { // 2 minutes
+      checkBackendHealth();
+    }
   }
 }, 30000);
 
