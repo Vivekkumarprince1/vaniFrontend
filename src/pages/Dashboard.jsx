@@ -42,6 +42,29 @@ const Dashboard = () => {
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
 
+    // Add function to save chat state
+    const saveChatState = (user, room) => {
+        if (user) {
+            localStorage.setItem('selectedUser', JSON.stringify(user));
+            localStorage.removeItem('selectedRoom');
+        } else if (room) {
+            localStorage.setItem('selectedRoom', room);
+            localStorage.removeItem('selectedUser');
+        }
+    };
+
+    // Add function to restore chat state
+    const restoreChatState = () => {
+        const savedUser = localStorage.getItem('selectedUser');
+        const savedRoom = localStorage.getItem('selectedRoom');
+        
+        if (savedUser) {
+            setSelectedUser(JSON.parse(savedUser));
+        } else if (savedRoom) {
+            setSelectedRoom(savedRoom);
+        }
+    };
+
     // Check authentication on component mount
     useEffect(() => {
         const token = localStorage.getItem('token');
@@ -59,6 +82,14 @@ const Dashboard = () => {
                 const res = await axios.get(`${API_URL}/api/auth/me`);
                 setUser(res.data);
                 setIsAuthenticated(true);
+                
+                // After user data is loaded, restore chat state
+                restoreChatState();
+                
+                // If there's a selected user or room, fetch their messages
+                if (selectedUser || selectedRoom) {
+                    fetchChatHistory(selectedUser?.id, selectedRoom);
+                }
             } catch (err) {
                 console.error('Error fetching user data:', err);
                 localStorage.removeItem('token');
@@ -762,6 +793,7 @@ const Dashboard = () => {
         setSelectedUser(user);
         setSelectedRoom(null);
         setShowSidebar(false);
+        saveChatState(user, null);
     };
 
     // Select room
@@ -769,6 +801,7 @@ const Dashboard = () => {
         setSelectedRoom(room);
         setSelectedUser(null);
         setShowSidebar(false);
+        saveChatState(null, room);
         socketManager.emit('joinRoom', room);
     };
 

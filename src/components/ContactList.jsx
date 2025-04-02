@@ -13,6 +13,21 @@ const ContactList = ({
 }) => {
     const { t } = useTranslation();
 
+    // Helper function to format last seen time
+    const formatLastSeen = (lastSeen) => {
+        if (!lastSeen) return '';
+        
+        const date = new Date(lastSeen);
+        const now = new Date();
+        const diffInMinutes = Math.floor((now - date) / (1000 * 60));
+        
+        if (diffInMinutes < 1) return t('justNow');
+        if (diffInMinutes < 60) return `${diffInMinutes} ${t('minutesAgo')}`;
+        if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)} ${t('hoursAgo')}`;
+        if (diffInMinutes < 10080) return `${Math.floor(diffInMinutes / 1440)} ${t('daysAgo')}`;
+        return date.toLocaleDateString();
+    };
+
     return (
         <aside className={`fixed lg:static w-80 bg-white h-full z-20 transform transition-transform duration-300 ease-in-out ${showSidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} shadow-lg`}>
             <div className="flex flex-col h-full">
@@ -67,7 +82,9 @@ const ContactList = ({
                                     <div className="ml-3 flex-1">
                                         <div className="flex items-center justify-between">
                                             <div className="font-semibold text-gray-900">{user.name}</div>
-                                            <div className="text-xs text-gray-500">12:30 PM</div>
+                                            <div className="text-xs text-gray-500">
+                                                {user.status === 'online' ? t('online') : formatLastSeen(user.lastSeen)}
+                                            </div>
                                         </div>
                                         <div className="text-sm text-gray-500 flex items-center space-x-1">
                                             {user.status === 'online' ? (
@@ -111,7 +128,7 @@ const ContactList = ({
                                     <div className="ml-3 flex-1">
                                         <div className="flex items-center justify-between">
                                             <div className="font-semibold text-gray-900">{room}</div>
-                                            <div className="text-xs text-gray-500">12:45 PM</div>
+                                            <div className="text-xs text-gray-500">{formatLastSeen(room.lastSeen)}</div>
                                         </div>
                                         <div className="text-sm text-gray-500">{t('groupChat')}</div>
                                     </div>

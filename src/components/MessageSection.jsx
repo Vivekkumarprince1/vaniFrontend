@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { useTranslation } from '../contexts/TranslationContext';
 import CallButtons from './CallButtons';
 import VideoCall from './VideoCall';
@@ -35,6 +35,21 @@ const MessageSection = ({
     const fileInputRef = useRef(null);
     const messageInputRef = useRef(null);
     const messagesEndRef = useRef(null);
+
+    // Update scroll to bottom function to be instant
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    };
+
+    // Add useEffect for auto-scrolling
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages, isTyping]); // Scroll when messages change or typing status changes
+
+    // Add scroll to bottom on component mount
+    useEffect(() => {
+        scrollToBottom();
+    }, []);
 
     const handleKeyPress = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -143,32 +158,37 @@ const MessageSection = ({
 
                 {/* Scrollable messages container */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {messages.map((msg, index) => (
-                        <div
-                            key={msg._id || index}
-                            className={`flex ${msg.sender === user.id ? 'justify-end' : 'justify-start'}`}
-                        >
+                    {messages.map((msg, index) => {
+                        // Determine if the message is from the current user
+                        const isCurrentUser = msg.sender?._id === user._id || msg.sender === user._id;
+                        
+                        return (
                             <div
-                                className={`max-w-[70%] rounded-2xl px-4 py-2 ${
-                                    msg.sender === user.id
-                                        ? 'bg-emerald-500 text-white rounded-br-none'
-                                        : 'bg-white text-gray-800 rounded-bl-none'
-                                } shadow-md`}
+                                key={msg._id || index}
+                                className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'}`}
                             >
-                                <div className="break-words text-[15px]">{msg.content}</div>
-                                <div className={`text-[11px] mt-1 flex items-center justify-end space-x-1 ${
-                                    msg.sender === user.id ? 'text-emerald-100' : 'text-gray-500'
-                                }`}>
-                                    <span>{formatTime(msg.timestamp)}</span>
-                                    {msg.sender === user.id && (
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    )}
+                                <div
+                                    className={`max-w-[70%] rounded-2xl px-4 py-2 ${
+                                        isCurrentUser
+                                            ? 'bg-emerald-500 text-white rounded-br-none'
+                                            : 'bg-white text-gray-800 rounded-bl-none'
+                                    } shadow-md`}
+                                >
+                                    <div className="break-words text-[15px]">{msg.content}</div>
+                                    <div className={`text-[11px] mt-1 flex items-center justify-end space-x-1 ${
+                                        isCurrentUser ? 'text-emerald-100' : 'text-gray-500'
+                                    }`}>
+                                        <span>{formatTime(msg.timestamp)}</span>
+                                        {isCurrentUser && (
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                            </svg>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                     
                     {isTyping && selectedUser && (
                         <div className="flex items-center space-x-2 text-gray-500">
