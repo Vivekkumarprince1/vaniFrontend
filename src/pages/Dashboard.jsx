@@ -7,6 +7,7 @@ import Header from '../components/Header';
 import ContactList from '../components/ContactList';
 import MessageSection from '../components/MessageSection';
 import socketManager from '../utils/socketManager';
+import Loader from '../components/Loader';
 
 // API base URL
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
@@ -38,6 +39,8 @@ const Dashboard = () => {
     const [isCameraOff, setIsCameraOff] = useState(false);
     const [callInfo, setCallInfo] = useState(null);
     const [preCallLanguage, setPreCallLanguage] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [loadingMessage, setLoadingMessage] = useState("Authenticating...");
 
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
@@ -79,17 +82,33 @@ const Dashboard = () => {
         // Get user data
         const fetchUserData = async () => {
             try {
+                setLoadingMessage("Fetching your profile...");
                 const res = await axios.get(`${API_URL}/api/auth/me`);
                 setUser(res.data);
                 setIsAuthenticated(true);
                 
                 // After user data is loaded, restore chat state
+                setLoadingMessage("Restoring your conversations...");
                 restoreChatState();
+                
+                // Fetch users and rooms
+                setLoadingMessage("Loading your contacts...");
+                await fetchUsers();
+                await fetchRooms();
                 
                 // If there's a selected user or room, fetch their messages
                 if (selectedUser || selectedRoom) {
-                    fetchChatHistory(selectedUser?.id, selectedRoom);
+                    setLoadingMessage("Loading messages...");
+                    await fetchChatHistory(selectedUser?.id, selectedRoom);
                 }
+                
+                // We've loaded the essential data, can show UI now
+                setLoading(false);
+                
+                // Initialize socket (but don't block UI on this)
+                setLoadingMessage("Connecting to real-time service...");
+                initializeSocket(token);
+                
             } catch (err) {
                 console.error('Error fetching user data:', err);
                 localStorage.removeItem('token');
@@ -99,12 +118,9 @@ const Dashboard = () => {
 
         fetchUserData();
     }, [navigate]);
-
-    // Initialize socket and WebRTC when authenticated
-    useEffect(() => {
-        if (!isAuthenticated || !user) return;
-
-        const token = localStorage.getItem('token');
+    
+    // Separate socket initialization function
+    const initializeSocket = (token) => {
         console.log('Initializing socket connection...');
         
         // Initialize socket using our manager
@@ -114,8 +130,6 @@ const Dashboard = () => {
         socketManager.on('connect', () => {
             console.log('Socket connected with ID:', socket.id);
             setIsOnline(true);
-            fetchUsers();
-            fetchRooms();
             // Set up WebRTC after socket connection is established
             setupWebRTC();
         });
@@ -123,12 +137,14 @@ const Dashboard = () => {
         socketManager.on('connect_error', (err) => {
             console.error('Socket connection error:', err);
             setIsOnline(false);
+            
             if (err.message === 'Authentication error') {
                 localStorage.removeItem('token');
                 navigate('/login');
             }
         });
-
+        
+        // Rest of socket event handlers...
         socketManager.on('disconnect', (reason) => {
             console.log('Socket disconnected, reason:', reason);
             setIsOnline(false);
@@ -149,7 +165,12 @@ const Dashboard = () => {
                 )
             );
         });
-
+    };
+    
+    // Initialize socket and WebRTC when authenticated
+    useEffect(() => {
+        if (!isAuthenticated || !user) return;
+        
         return () => {
             console.log('Cleaning up socket and WebRTC');
             // Remove all event listeners
@@ -372,8 +393,10 @@ const Dashboard = () => {
                 preferredLanguage: u.preferredLanguage
             }));
             setUsers(mappedUsers);
+            return mappedUsers;
         } catch (error) {
             console.error('Error fetching users:', error);
+            throw error;
         }
     };
 
@@ -395,8 +418,10 @@ const Dashboard = () => {
         try {
             const res = await axios.get(`${API_URL}/api/chat/rooms`);
             setRooms(res.data);
+            return res.data;
         } catch (error) {
             console.error('Error fetching rooms:', error);
+            throw error;
         }
     };
 
@@ -409,13 +434,15 @@ const Dashboard = () => {
             } else if (roomId) {
                 url += `?roomId=${roomId}`;
             } else {
-                return;
+                return [];
             }
 
             const res = await axios.get(url);
             setMessages(res.data);
+            return res.data;
         } catch (error) {
             console.error('Error fetching chat history:', error);
+            throw error;
         }
     };
 
@@ -879,8 +906,15 @@ const Dashboard = () => {
         };
     }, [socket, currentLanguage]);
 
-    if (!isAuthenticated) {
-        return <div className="loading">Loading...</div>;
+    // Update socket connection status
+    useEffect(() => {
+        if (socket) {
+            setLoadingMessage("Connecting to chat service...");
+        }
+    }, [socket]);
+
+    if (!isAuthenticated || loading) {
+        return <Loader message={loadingMessage} />;
     }
 
     return (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import Loader from '../components/Loader';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
@@ -52,51 +53,55 @@ const Login = () => {
   };
 
   return (
-    <div className="auth-container">
-      <div className="auth-card">
-        <h1>Login to Vani</h1>
-        <p className="subtitle">Connect with friends through video, audio, and chat</p>
-        
-        {error && <div className="error-message">{error}</div>}
-        
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label htmlFor="mobileNumber">Mobile Number</label>
-            <input
-              type="tel"
-              id="mobileNumber"
-              name="mobileNumber"
-              value={formData.mobileNumber}
-              onChange={handleChange}
-              required
-              placeholder="Enter your 10-digit mobile number"
-              pattern="[0-9]{10}"
-            />
-          </div>
+    <>
+      {loading && <Loader message="Logging you in..." />}
+      
+      <div className="auth-container">
+        <div className="auth-card">
+          <h1>Login to Vani</h1>
+          <p className="subtitle">Connect with friends through video, audio, and chat</p>
           
-          <div className="form-group">
-            <label htmlFor="password">Password</label>
-            <input
-              type="password"
-              id="password"
-              name="password"
-              value={formData.password}
-              onChange={handleChange}
-              required
-              placeholder="Enter your password"
-            />
-          </div>
+          {error && <div className="error-message">{error}</div>}
           
-          <button type="submit" disabled={loading} className="auth-button">
-            {loading ? 'Logging in...' : 'Login'}
-          </button>
-        </form>
-        
-        <p className="auth-link">
-          Don't have an account? <Link to="/register">Register</Link>
-        </p>
+          <form onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label htmlFor="mobileNumber">Mobile Number</label>
+              <input
+                type="tel"
+                id="mobileNumber"
+                name="mobileNumber"
+                value={formData.mobileNumber}
+                onChange={handleChange}
+                required
+                placeholder="Enter your 10-digit mobile number"
+                pattern="[0-9]{10}"
+              />
+            </div>
+            
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input
+                type="password"
+                id="password"
+                name="password"
+                value={formData.password}
+                onChange={handleChange}
+                required
+                placeholder="Enter your password"
+              />
+            </div>
+            
+            <button type="submit" disabled={loading} className="auth-button">
+              {loading ? 'Logging in...' : 'Login'}
+            </button>
+          </form>
+          
+          <p className="auth-link">
+            Don't have an account? <Link to="/register">Register</Link>
+          </p>
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 

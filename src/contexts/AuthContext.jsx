@@ -10,6 +10,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState("Checking authentication...");
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -21,10 +22,12 @@ export const AuthProvider = ({ children }) => {
       }
       
       try {
+        setLoadingMessage("Validating your session...");
         // Set default headers for all axios requests
         axios.defaults.headers.common['x-auth-token'] = token;
         
         // Fetch user data
+        setLoadingMessage("Loading your profile...");
         const res = await axios.get(`${API_URL}/api/auth/me`);
         setUser(res.data);
         setIsAuthenticated(true);
@@ -32,6 +35,7 @@ export const AuthProvider = ({ children }) => {
         console.error('Authentication error:', err);
         localStorage.removeItem('token');
       } finally {
+        setLoadingMessage("Starting application...");
         setLoading(false);
       }
     };
@@ -42,6 +46,7 @@ export const AuthProvider = ({ children }) => {
   // Login user with mobile number
   const login = async (mobileNumber, password) => {
     try {
+      setLoadingMessage("Logging in...");
       const res = await axios.post(`${API_URL}/api/auth/login`, { mobileNumber, password });
       localStorage.setItem('token', res.data.token);
       
@@ -49,6 +54,7 @@ export const AuthProvider = ({ children }) => {
       axios.defaults.headers.common['x-auth-token'] = res.data.token;
       
       // Fetch user data
+      setLoadingMessage("Loading your profile...");
       const userRes = await axios.get(`${API_URL}/api/auth/me`);
       setUser(userRes.data);
       setIsAuthenticated(true);
@@ -65,6 +71,7 @@ export const AuthProvider = ({ children }) => {
   // Register user
   const register = async (userData) => {
     try {
+      setLoadingMessage("Creating your account...");
       // Register the user - only username, mobile number, and password
       await axios.post(`${API_URL}/api/auth/register`, {
         username: userData.username,
@@ -73,6 +80,7 @@ export const AuthProvider = ({ children }) => {
       });
       
       // Login after registration using mobile number
+      setLoadingMessage("Logging you in...");
       return await login(userData.mobileNumber, userData.password);
     } catch (err) {
       return { 
@@ -96,6 +104,8 @@ export const AuthProvider = ({ children }) => {
         user,
         isAuthenticated,
         loading,
+        loadingMessage,
+        setLoadingMessage,
         login,
         register,
         logout
