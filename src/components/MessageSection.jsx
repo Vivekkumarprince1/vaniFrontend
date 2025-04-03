@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { useTranslation } from '../contexts/TranslationContext';
 import CallButtons from './CallButtons';
 import VideoCall from './VideoCall';
+import callSoundPlayer from '../utils/callSounds';
 
 const MessageSection = ({
     selectedUser,
@@ -50,6 +51,53 @@ const MessageSection = ({
     useEffect(() => {
         scrollToBottom();
     }, []);
+
+    // Add useEffect hook for playing ringtone
+    useEffect(() => {
+        // Play ringtone when an incoming call is detected
+        if (incomingCall) {
+            console.log('Incoming call detected in MessageSection, playing ringtone');
+            
+            // Play the ringtone with a slight delay to ensure component is mounted
+            const ringtoneTimeout = setTimeout(() => {
+                try {
+                    callSoundPlayer.playRingtone();
+                    console.log('Ringtone started in MessageSection');
+                    
+                    // Create a user interaction handler to help with autoplay restrictions
+                    const handleUserInteraction = () => {
+                        try {
+                            callSoundPlayer.playRingtone();
+                        } catch (err) {
+                            console.error('Error playing ringtone after user interaction:', err);
+                        }
+                    };
+                    
+                    // Add event listeners to catch any user interaction
+                    document.addEventListener('click', handleUserInteraction, { once: true });
+                    document.addEventListener('touchstart', handleUserInteraction, { once: true });
+                    document.addEventListener('keydown', handleUserInteraction, { once: true });
+                    
+                    // Clean up event listeners after a reasonable time
+                    setTimeout(() => {
+                        document.removeEventListener('click', handleUserInteraction);
+                        document.removeEventListener('touchstart', handleUserInteraction);
+                        document.removeEventListener('keydown', handleUserInteraction);
+                    }, 5000);
+                } catch (err) {
+                    console.error('Error playing ringtone from MessageSection:', err);
+                }
+            }, 100);
+            
+            // Clean up function
+            return () => {
+                clearTimeout(ringtoneTimeout);
+            };
+        } else {
+            // Stop ringtone when incoming call is dismissed
+            callSoundPlayer.stopAll();
+        }
+    }, [incomingCall]);
 
     const handleKeyPress = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -134,7 +182,22 @@ const MessageSection = ({
                             </p>
                             <div className="flex justify-center space-x-4">
                                 <button
-                                    onClick={answerCall}
+                                    onClick={() => {
+                                        // First attempt - stop all sounds
+                                        callSoundPlayer.stopAll();
+                                        
+                                        // Second attempt after slight delay 
+                                        setTimeout(() => {
+                                            callSoundPlayer.stopAll();
+                                            callSoundPlayer.playAnswer();
+                                        }, 100);
+                                        
+                                        // Third attempt - use a global event to force audio stop
+                                        document.dispatchEvent(new CustomEvent('vani-stop-all-sounds'));
+                                        
+                                        // Now proceed with answering
+                                        answerCall();
+                                    }}
                                     className="px-6 py-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors duration-200 flex items-center space-x-2"
                                 >
                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -143,7 +206,11 @@ const MessageSection = ({
                                     <span>{t('answer')}</span>
                                 </button>
                                 <button
-                                    onClick={() => setIncomingCall(null)}
+                                    onClick={() => {
+                                        callSoundPlayer.stopAll();
+                                        callSoundPlayer.playDisconnect();
+                                        setIncomingCall(null);
+                                    }}
                                     className="px-6 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors duration-200 flex items-center space-x-2"
                                 >
                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

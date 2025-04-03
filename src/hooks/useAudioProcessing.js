@@ -319,9 +319,18 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
   useEffect(() => {
     if (!socket) return;
 
+    // Add an isPlaying flag to prevent multiple playbacks
+    let isPlaying = false;
+    
     // Handle translated audio from either direction
     const handleTranslatedAudio = async (data) => {
       if (!data) return;
+      
+      // Skip if already playing audio to prevent repeats
+      if (isPlaying) {
+        console.log('Already playing audio, skipping to prevent repeats');
+        return;
+      }
 
       console.log(`⭐ RECEIVED translatedAudio event, direction: ${data.requestId?.startsWith('remote') ? 'remote->local' : 'local->remote'}`, {
         hasText: !!data.text,
@@ -340,6 +349,8 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
       // Play the translated audio if available
       if (audio) {
         try {
+          isPlaying = true;
+          
           // Create new mixer if it doesn't exist yet
           if (!audioMixerRef.current) {
             audioMixerRef.current = new AudioMixer();
@@ -360,126 +371,68 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
           audioNotification.style.zIndex = '9999';
           document.body.appendChild(audioNotification);
           
-          // Play a short beep before the actual audio to ensure audio system is active
-          const beepContext = new (window.AudioContext || window.webkitAudioContext)();
-          const oscillator = beepContext.createOscillator();
-          const gainNode = beepContext.createGain();
-          oscillator.connect(gainNode);
-          gainNode.connect(beepContext.destination);
-          oscillator.frequency.value = 880;
-          gainNode.gain.value = 0.05; // Very quiet beep
-          oscillator.start();
-          oscillator.stop(beepContext.currentTime + 0.05); // Very short beep
-          
-          // Wait a moment for the beep to finish
-          await new Promise(resolve => setTimeout(resolve, 100));
-          
           // Ensure audio context is active first
           await audioMixerRef.current.ensureAudioContextActive();
           
-          // Try all available playback methods
+          // Define a variable to track if we've successfully played audio
+          let playbackSuccessful = false;
+          
+          // Try primary method
           try {
             console.log('Attempting primary method: AudioMixer.playTranslatedAudio');
             await audioMixerRef.current.playTranslatedAudio(audio);
             console.log('✅ Primary audio playback successful');
+            playbackSuccessful = true;
           } catch (playError) {
             console.error('❌ Primary audio playback failed:', playError);
             
-            try {
-              // Try audio element as fallback
-              console.log('Attempting fallback method 1: HTML Audio element');
-              const audioElement = new Audio(`data:audio/wav;base64,${audio}`);
-              
-              // Add event listeners for debugging
-              audioElement.addEventListener('canplaythrough', () => {
-                console.log('Audio element can play through');
-              });
-              
-              audioElement.addEventListener('error', (e) => {
-                console.error('Audio element error:', e.target.error);
-              });
-              
-              // Try to play with user interaction
-              await new Promise((resolve, reject) => {
-                // Force user interaction to unlock audio
-                const unlockButton = document.createElement('button');
-                unlockButton.textContent = 'Click to Play Audio';
-                unlockButton.style.position = 'fixed';
-                unlockButton.style.top = '60px';
-                unlockButton.style.left = '50%';
-                unlockButton.style.transform = 'translateX(-50%)';
-                unlockButton.style.zIndex = '10000';
-                unlockButton.style.padding = '10px';
-                unlockButton.style.backgroundColor = '#4CAF50';
-                unlockButton.style.color = 'white';
-                unlockButton.style.border = 'none';
-                unlockButton.style.borderRadius = '5px';
-                document.body.appendChild(unlockButton);
-                
-                unlockButton.onclick = async () => {
-                  try {
-                    await audioElement.play();
-                    resolve();
-                  } catch (err) {
-                    reject(err);
-                  } finally {
-                    document.body.removeChild(unlockButton);
-                  }
-                };
-                
-                // Auto-cleanup after 5 seconds
-                setTimeout(() => {
-                  if (document.body.contains(unlockButton)) {
-                    document.body.removeChild(unlockButton);
-                    reject(new Error('User interaction timeout'));
-                  }
-                }, 5000);
-              });
-              
-              console.log('✅ Fallback method 1 successful');
-            } catch (fallback1Error) {
-              console.error('❌ Fallback method 1 failed:', fallback1Error);
-              
+            // Only try fallback if primary method failed
+            if (!playbackSuccessful) {
               try {
-                // Try recreating AudioMixer
-                console.log('Attempting fallback method 2: Recreate AudioMixer');
-                audioMixerRef.current = new AudioMixer();
-                await audioMixerRef.current.playTranslatedAudio(audio);
-                console.log('✅ Fallback method 2 successful');
-              } catch (fallback2Error) {
-                console.error('❌ All audio playback methods failed');
+                // Try audio element as fallback
+                console.log('Attempting fallback method: HTML Audio element');
+                const audioElement = new Audio(`data:audio/wav;base64,${audio}`);
                 
-                // Final attempt with a simpler approach
-                try {
-                  console.log('Attempting last resort method');
-                  const simpleAudio = new Audio();
-                  simpleAudio.src = `data:audio/wav;base64,${audio}`;
-                  simpleAudio.play();
-                } catch (finalError) {
-                  console.error('Final audio playback attempt failed:', finalError);
-                }
+                // Add event listeners for debugging
+                audioElement.addEventListener('canplaythrough', () => {
+                  console.log('Audio element can play through');
+                });
+                
+                audioElement.addEventListener('error', (e) => {
+                  console.error('Audio element error:', e.target.error);
+                });
+                
+                await audioElement.play();
+                console.log('✅ Fallback method successful');
+                playbackSuccessful = true;
+              } catch (fallbackError) {
+                console.error('❌ All audio playback methods failed:', fallbackError);
               }
             }
           } finally {
-            // Close the beep context
-            beepContext.close();
-            
             // Remove the notification
             setTimeout(() => {
               if (document.body.contains(audioNotification)) {
                 document.body.removeChild(audioNotification);
               }
             }, 3000);
+            
+            // Reset the playing flag when audio is done
+            setTimeout(() => {
+              isPlaying = false;
+              console.log('Audio playback complete, ready for next audio');
+            }, 5000); // Safe timeout to ensure audio is finished
           }
         } catch (error) {
           console.error('Error playing translated audio:', error);
+          isPlaying = false; // Reset flag on error
         }
       } else {
         console.warn('Received translatedAudio event without audio data');
       }
     };
 
-    // Register socket event listeners for both directions
+    // Register socket event listeners - only use the main event to prevent duplicates
     socket.on('translatedAudio', handleTranslatedAudio);
     
     // Also handle specific translation events - in case the backend uses different events for different directions

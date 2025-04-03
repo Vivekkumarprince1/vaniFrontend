@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import socketManager from '../utils/socketManager';
 import { getRTCConfiguration, getMediaConstraints, waitForIceGathering } from '../utils/webrtcConfig';
+import callSoundPlayer from '../utils/callSounds';
 
 // Custom hook for WebRTC operations
 const useWebRTC = (user, selectedUser) => {
@@ -121,6 +122,8 @@ const useWebRTC = (user, selectedUser) => {
     socketManager.off('offer');
     socketManager.off('answer');
     socketManager.off('iceCandidate');
+    socketManager.off('callDeclined');
+    socketManager.off('callEnded');
 
     // Handle incoming offers
     socketManager.on('offer', async ({ offer, from, type, caller }) => {
@@ -130,12 +133,31 @@ const useWebRTC = (user, selectedUser) => {
         return;
       }
       setIncomingCall({ from, offer, type, caller });
+      
+      // Play ringtone for incoming call - use setTimeout to ensure DOM is ready
+      setTimeout(() => {
+        try {
+          console.log('Attempting to play ringtone...');
+          callSoundPlayer.playRingtone();
+          
+          // Also try to trigger a user interaction if needed
+          document.body.addEventListener('click', function unlockAudio() {
+            callSoundPlayer.playRingtone();
+            document.body.removeEventListener('click', unlockAudio);
+          }, { once: true });
+        } catch (e) {
+          console.error('Error playing ringtone:', e);
+        }
+      }, 100);
     });
 
     // Handle incoming answers
     socketManager.on('answer', async ({ answer }) => {
       console.log('Received answer, signaling state:', pc.signalingState);
       try {
+        // Stop ringback tone when call is answered
+        callSoundPlayer.stopAll();
+        
         if (pc && pc.signalingState !== 'closed') {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
           console.log('Set remote description successfully');
@@ -157,6 +179,30 @@ const useWebRTC = (user, selectedUser) => {
         }
       } catch (error) {
         console.error('Error adding ICE candidate:', error);
+      }
+    });
+
+    // Add event handler for 'callDeclined'
+    socketManager.on('callDeclined', () => {
+      console.log('Call was declined');
+      try {
+        callSoundPlayer.stopAll();
+        setTimeout(() => callSoundPlayer.playDisconnect(), 100);
+        setIsCallActive(false);
+      } catch (e) {
+        console.error('Error handling declined call:', e);
+      }
+    });
+
+    // Add event handler for 'callEnded'
+    socketManager.on('callEnded', () => {
+      console.log('Remote party ended the call');
+      try {
+        callSoundPlayer.stopAll();
+        setTimeout(() => callSoundPlayer.playDisconnect(), 100);
+        endCall();
+      } catch (e) {
+        console.error('Error handling ended call:', e);
       }
     });
   };
@@ -265,6 +311,22 @@ const useWebRTC = (user, selectedUser) => {
         callerInfo
       });
 
+      // Play ringback tone for caller with a small delay to ensure UI is updated
+      setTimeout(() => {
+        try {
+          console.log('Starting ringback tone...');
+          callSoundPlayer.playRingback();
+          
+          // Also try to trigger a user interaction if needed
+          document.body.addEventListener('click', function unlockAudio() {
+            callSoundPlayer.playRingback();
+            document.body.removeEventListener('click', unlockAudio);
+          }, { once: true });
+        } catch (e) {
+          console.error('Error playing ringback:', e);
+        }
+      }, 100);
+
       setIsCallActive(true);
 
     } catch (error) {
@@ -278,12 +340,30 @@ const useWebRTC = (user, selectedUser) => {
   const answerCall = async (currentLanguage) => {
     if (!incomingCall || !callInfo) return;
     
+    // Stop ringtone when answering - Add multiple attempts with delay
+    try {
+      console.log('Stopping ringtone in answerCall - first attempt');
+      callSoundPlayer.stopAll();
+      
+      // Secondary attempt after a short delay
+      setTimeout(() => {
+        try {
+          console.log('Secondary ringtone stop attempt in answerCall');
+          callSoundPlayer.stopAll();
+        } catch (e) {
+          console.error('Error in secondary ringtone stop:', e);
+        }
+      }, 300);
+    } catch (e) {
+      console.error('Error stopping ringtone in answerCall:', e);
+    }
+    
     try {
       // Lock in the caller's info for the duration of the call
       console.log('Answering call with caller info:', callInfo);
       
       // Clean up any existing call
-      endCall();
+      endCall(false); // Pass false to avoid playing disconnect sound when answering
 
       // Create new peer connection
       const pc = await setupWebRTC();
@@ -338,8 +418,25 @@ const useWebRTC = (user, selectedUser) => {
   };
 
   // End call
-  const endCall = () => {
+  const endCall = (playSound = true) => {
     console.log('Ending call');
+    
+    // Play disconnect sound and stop any other sounds if requested
+    try {
+      callSoundPlayer.stopAll();
+      
+      if (playSound) {
+        setTimeout(() => {
+          try {
+            callSoundPlayer.playDisconnect();
+          } catch (e) {
+            console.error('Error playing disconnect sound:', e);
+          }
+        }, 100);
+      }
+    } catch (e) {
+      console.error('Error handling sounds during call end:', e);
+    }
 
     // First clean up tracks
     if (localStream) {
@@ -370,6 +467,8 @@ const useWebRTC = (user, selectedUser) => {
       socketManager.off('offer');
       socketManager.off('answer');
       socketManager.off('iceCandidate');
+      socketManager.off('callDeclined');
+      socketManager.off('callEnded');
     }
 
     // Reset video refs
@@ -427,10 +526,22 @@ const useWebRTC = (user, selectedUser) => {
     setCallInfo(info);
   };
 
+  // Update or add the setIncomingCall function
+  const setIncomingCallHandler = (call) => {
+    // If call is null, stop sounds (call was declined)
+    if (call === null && incomingCall !== null) {
+      callSoundPlayer.stopAll();
+    }
+    setIncomingCall(call);
+  };
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
       endCall();
+      
+      // Clean up call sounds
+      callSoundPlayer.cleanup();
     };
   }, []);
 
@@ -452,7 +563,7 @@ const useWebRTC = (user, selectedUser) => {
     toggleMute,
     toggleCamera,
     setCallerInfo,
-    setIncomingCall
+    setIncomingCall: setIncomingCallHandler
   };
 };
 

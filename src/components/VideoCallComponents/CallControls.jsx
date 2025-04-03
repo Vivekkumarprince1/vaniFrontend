@@ -1,4 +1,5 @@
 import React from 'react';
+import callSoundPlayer from '../../utils/callSounds';
 
 /**
  * Component for video call control buttons
@@ -37,7 +38,11 @@ const CallControls = ({ toggleMute, toggleCamera, endCall, isMuted, isCameraOff 
       </button>
       
       <button
-        onClick={endCall}
+        onClick={() => {
+          callSoundPlayer.stopAll();
+          callSoundPlayer.playDisconnect();
+          endCall();
+        }}
         className="p-4 rounded-full bg-red-500 text-white shadow-lg hover:bg-red-600 transition-colors"
         aria-label="End call"
         title="End call"
