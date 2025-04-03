@@ -73,6 +73,10 @@ class SocketManager {
       console.log(`Using transport: ${this.socket.io.engine.transport.name}`);
       this.isConnected = true;
       this.attemptCount = 0;
+      
+      // Re-register all event handlers to ensure they work with the new socket connection
+      this.reregisterAllEventHandlers();
+      
       this.triggerEvent('connect');
     });
 
@@ -112,6 +116,36 @@ class SocketManager {
   }
 
   /**
+   * Reregister all event handlers with the socket
+   * This is needed when the socket connection is reestablished
+   */
+  reregisterAllEventHandlers() {
+    console.log('Reregistering all event handlers with socket');
+    
+    // First remove all existing socket listeners except built-in ones
+    if (this.socket) {
+      for (const [event] of this.eventHandlers.entries()) {
+        if (!['connect', 'connect_error', 'disconnect'].includes(event)) {
+          this.socket.removeAllListeners(event);
+          console.log(`Removed all socket listeners for event: ${event}`);
+        }
+      }
+      
+      // Then re-add them
+      for (const [event, handlers] of this.eventHandlers.entries()) {
+        if (!['connect', 'connect_error', 'disconnect'].includes(event)) {
+          // Only register socket event once for each event type
+          this.socket.on(event, (...args) => {
+            console.log(`Received '${event}' event from server:`, args[0] ? JSON.stringify(args[0]).substring(0, 200) + '...' : 'no data');
+            this.triggerEvent(event, ...args);
+          });
+          console.log(`Reregistered socket listener for event: ${event} with ${handlers.length} handlers`);
+        }
+      }
+    }
+  }
+
+  /**
    * Register event handlers
    * @param {string} event - Event name
    * @param {Function} handler - Event handler function
@@ -123,35 +157,43 @@ class SocketManager {
       // Only register socket listener for custom events (not built-in ones we handle above)
       if (!['connect', 'connect_error', 'disconnect'].includes(event)) {
         this.socket?.on(event, (...args) => {
+          console.log(`Received '${event}' event from server:`, args[0] ? JSON.stringify(args[0]).substring(0, 200) + '...' : 'no data');
           this.triggerEvent(event, ...args);
         });
       }
     }
     
     this.eventHandlers.get(event).push(handler);
+    console.log(`Registered handler for '${event}' event, total handlers: ${this.eventHandlers.get(event).length}`);
   }
 
   /**
    * Remove event handlers
    * @param {string} event - Event name
-   * @param {Function} handler - Event handler function (optional)
+   * @param {Function} [handler] - Optional specific handler to remove
    */
   off(event, handler) {
-    if (!this.eventHandlers.has(event)) return;
+    if (!this.eventHandlers.has(event)) {
+      return;
+    }
     
     if (handler) {
+      // Remove specific handler
       const handlers = this.eventHandlers.get(event);
       const index = handlers.indexOf(handler);
       if (index !== -1) {
         handlers.splice(index, 1);
+        console.log(`Removed specific handler for '${event}' event, remaining: ${handlers.length}`);
       }
-      if (handlers.length === 0) {
-        this.eventHandlers.delete(event);
-        this.socket?.off(event);
-      }
+      
+      // Do not remove socket listener as other handlers may still be registered
     } else {
-      this.eventHandlers.delete(event);
-      this.socket?.off(event);
+      // Remove all handlers for this event but keep the socket listener
+      this.eventHandlers.set(event, []);
+      console.log(`Removed all handlers for '${event}' event`);
+      
+      // We don't remove the socket listener, since we might register new handlers later
+      // The socket listener will continue to call triggerEvent, which checks if handlers exist
     }
   }
 
@@ -161,15 +203,21 @@ class SocketManager {
    * @param {...any} args - Event arguments
    */
   triggerEvent(event, ...args) {
-    if (this.eventHandlers.has(event)) {
-      this.eventHandlers.get(event).forEach(handler => {
-        try {
-          handler(...args);
-        } catch (error) {
-          console.error(`Error in ${event} handler:`, error);
-        }
-      });
+    if (!this.eventHandlers.has(event)) {
+      console.warn(`No handlers registered for '${event}' event`);
+      return;
     }
+    
+    const handlers = this.eventHandlers.get(event);
+    console.log(`Triggering ${handlers.length} handlers for '${event}' event`);
+    
+    handlers.forEach(handler => {
+      try {
+        handler(...args);
+      } catch (error) {
+        console.error(`Error in '${event}' event handler:`, error);
+      }
+    });
   }
 
   /**
@@ -179,11 +227,16 @@ class SocketManager {
    */
   emit(event, ...args) {
     if (!this.socket || !this.isConnected) {
-      console.warn(`Cannot emit ${event}: Socket is not connected`);
+      console.warn(`Cannot emit ${event}: Socket is not connected, current state:`, {
+        socketExists: !!this.socket,
+        connected: this.isConnected,
+        socketConnected: this.socket?.connected
+      });
       return false;
     }
     
     try {
+      console.log(`Emitting '${event}' event to server with data:`, args[0] ? JSON.stringify(args[0]).substring(0, 200) + '...' : 'no data');
       this.socket.emit(event, ...args);
       return true;
     } catch (error) {

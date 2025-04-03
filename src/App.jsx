@@ -1,4 +1,4 @@
-import React, { useContext } from 'react';
+import React, { useContext, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -31,6 +31,74 @@ const AppRoutes = () => {
 };
 
 const App = () => {
+  // Add audio initialization effect
+  useEffect(() => {
+    // Initialize audio context and unlock audio playback on first user interaction
+    const initAudio = () => {
+      try {
+        console.log('Initializing audio context...');
+        // Create a silent audio context
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AudioContext();
+        
+        // Create a silent buffer
+        const buffer = audioContext.createBuffer(1, 1, 22050);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start(0);
+        
+        // Resume the audio context
+        if (audioContext.state === 'suspended') {
+          audioContext.resume().then(() => {
+            console.log('Audio context resumed successfully');
+          }).catch(err => {
+            console.error('Failed to resume audio context:', err);
+          });
+        }
+        
+        console.log('Audio initialized with state:', audioContext.state);
+        
+        // Store the audio context in window for debugging
+        window.appAudioContext = audioContext;
+      } catch (error) {
+        console.error('Error initializing audio:', error);
+      }
+    };
+    
+    // Add event listeners to unlock audio on user interaction
+    const unlockAudio = () => {
+      console.log('User interaction detected, unlocking audio...');
+      if (window.appAudioContext && window.appAudioContext.state === 'suspended') {
+        window.appAudioContext.resume();
+      }
+      // Remove the event listeners after first interaction
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+    };
+    
+    // Initialize audio
+    initAudio();
+    
+    // Add event listeners for user interaction
+    document.addEventListener('click', unlockAudio);
+    document.addEventListener('touchstart', unlockAudio);
+    document.addEventListener('keydown', unlockAudio);
+    
+    return () => {
+      // Clean up event listeners
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      
+      // Close audio context if it exists
+      if (window.appAudioContext) {
+        window.appAudioContext.close();
+      }
+    };
+  }, []);
+
   return (
     <AuthProvider>
       <TranslationProvider>

@@ -392,6 +392,16 @@ const Dashboard = () => {
                 avatar: u.username.charAt(0).toUpperCase(),
                 preferredLanguage: u.preferredLanguage
             }));
+            
+            // Update selectedUser with latest socket ID if it exists in the new user list
+            if (selectedUser) {
+                const updatedSelectedUser = mappedUsers.find(u => u.id === selectedUser.id);
+                if (updatedSelectedUser && updatedSelectedUser.socketId !== selectedUser.socketId) {
+                    console.log('Updating selected user socket ID from', selectedUser.socketId, 'to', updatedSelectedUser.socketId);
+                    setSelectedUser(updatedSelectedUser);
+                }
+            }
+            
             setUsers(mappedUsers);
             return mappedUsers;
         } catch (error) {
@@ -407,8 +417,8 @@ const Dashboard = () => {
         // Initial fetch
         fetchUsers();
 
-        // Set up periodic refresh
-        const interval = setInterval(fetchUsers, 30000); // Every 30 seconds
+        // Set up periodic refresh with more frequent updates (every 10 seconds)
+        const interval = setInterval(fetchUsers, 10000);
 
         return () => clearInterval(interval);
     }, [isAuthenticated, user]);
@@ -549,13 +559,37 @@ const Dashboard = () => {
 
     // Start call
     const startCall = async (type = 'video') => {
-        if (!selectedUser?.socketId) {
-            console.error('No socket ID for selected user:', selectedUser);
-            alert('Cannot start call - user not connected');
+        if (!selectedUser) {
+            console.error('No user selected');
+            alert('Please select a user to call');
             return;
         }
-
+        
+        // Refresh user list to get the latest socket ID
         try {
+            const updatedUsers = await fetchUsers();
+            const latestSelectedUser = updatedUsers.find(u => u.id === selectedUser.id);
+            
+            if (!latestSelectedUser) {
+                console.error('Selected user not found in updated user list');
+                alert('User not found. Please select another user.');
+                return;
+            }
+            
+            if (!latestSelectedUser.socketId) {
+                console.error('No socket ID for selected user:', latestSelectedUser);
+                alert('Cannot start call - user is not connected');
+                return;
+            }
+            
+            if (latestSelectedUser.socketId !== selectedUser.socketId) {
+                console.log('Updating target socket ID from', selectedUser.socketId, 'to', latestSelectedUser.socketId);
+                setSelectedUser(latestSelectedUser);
+            }
+            
+            // Use the latest selectedUser for the call
+            const targetUser = latestSelectedUser;
+
             // Clean up existing call first
             endCall();
 
@@ -618,12 +652,27 @@ const Dashboard = () => {
             };
 
             console.log('Sending call with caller info:', callerInfo);
+            console.log('Target socket ID:', targetUser.socketId);
 
+            // Add socket connection check
+            if (!socketManager.isSocketConnected()) {
+                console.error('Socket not connected, cannot make call');
+                alert('Network connection issue. Please refresh and try again.');
+                endCall();
+                return;
+            }
+
+            // Send the offer
             socketManager.emit('offer', {
-                targetId: selectedUser.socketId,
+                targetId: targetUser.socketId,
                 offer: pc.localDescription,
                 type,
                 callerInfo
+            });
+
+            // Register a listener for confirmation that the offer was received
+            socketManager.on('callDelivered', (data) => {
+                console.log('Call delivered confirmation received:', data);
             });
 
             setIsCallActive(true);
@@ -856,11 +905,38 @@ const Dashboard = () => {
     useEffect(() => {
         if (!socket) return;
 
-        socketManager.on('incomingCall', (data) => {
-            console.log('Incoming call with data:', data);
+        // First, remove any existing listeners to prevent duplicates
+        socketManager.off('incomingCall');
+        socketManager.off('callEnded');
+
+        const handleIncomingCall = (data) => {
+            console.log('INCOMING CALL EVENT RECEIVED:', data);
             if (!data.caller) {
                 console.error('Missing caller info in incoming call');
                 return;
+            }
+
+            // Send confirmation of receipt back to server
+            if (socket && data.from) {
+                console.log('Sending receipt confirmation for call from:', data.from);
+                socketManager.emit('incomingCallReceived', { 
+                    from: data.from,
+                    receiverId: socket.id,
+                    timestamp: Date.now()
+                });
+            }
+
+            // Try to resume audio context if needed
+            try {
+                const audioContext = window.AudioContext || window.webkitAudioContext;
+                if (audioContext && audioContext.state === 'suspended') {
+                    console.log('Attempting to resume audio context for incoming call');
+                    audioContext.resume().then(() => {
+                        console.log('Audio context resumed for incoming call');
+                    });
+                }
+            } catch (err) {
+                console.warn('Could not resume audio context:', err);
             }
 
             // Save current language
@@ -882,29 +958,47 @@ const Dashboard = () => {
             // Update selected user with caller info
             setSelectedUser(callerInfo);
 
-            // Set incoming call with complete info
-            setIncomingCall({
+            // Set incoming call with complete info - force UI update
+            const callData = {
                 offer: data.offer,
                 type: data.type,
                 from: data.from,
                 caller: callerInfo
-            });
-        });
+            };
+            console.log('Setting incoming call data:', callData);
+            setIncomingCall(null); // Clear first to ensure state change is detected
+            setTimeout(() => setIncomingCall(callData), 50); // Set after a small delay
+        };
 
-        socketManager.on('callEnded', () => {
+        const handleCallEnded = () => {
             // Restore original language
             if (preCallLanguage) {
                 changeLanguage(preCallLanguage);
             }
             setCallInfo(null);
             setPreCallLanguage(null);
+        };
+
+        // Register event handlers using named functions so they can be properly removed
+        socketManager.on('incomingCall', handleIncomingCall);
+        socketManager.on('callEnded', handleCallEnded);
+
+        // Also monitor socket reconnection events
+        socketManager.on('connect', () => {
+            console.log('Socket reconnected - re-registering event handlers');
+            // Force re-register handlers on reconnection
+            socketManager.off('incomingCall');
+            socketManager.off('callEnded');
+            socketManager.on('incomingCall', handleIncomingCall);
+            socketManager.on('callEnded', handleCallEnded);
         });
 
         return () => {
             socketManager.off('incomingCall');
             socketManager.off('callEnded');
+            socketManager.off('connect');
         };
-    }, [socket, currentLanguage]);
+    }, [socket, currentLanguage, preCallLanguage]);
 
     // Update socket connection status
     useEffect(() => {
