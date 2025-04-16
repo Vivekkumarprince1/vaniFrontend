@@ -3,7 +3,7 @@ import { createOptimizedAudioContext, hasSound, convertToInt16, createWavBuffer,
 import AudioMixer from '../services/AudioMixer';
 
 /**
- * Custom hook for audio processing in calls
+ * Custom hook for audio processing in calls with optimized playback queue
  */
 const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, currentLanguage) => {
   const [transcribedText, setTranscribedText] = useState('');
@@ -20,6 +20,13 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
   const remoteSourceNodeRef = useRef(null);
   const remoteAudioProcessorRef = useRef(null);
   const audioMixerRef = useRef(null);
+  
+  // Audio playback queue system
+  const audioQueueRef = useRef([]);
+  const isPlayingRef = useRef(false);
+  
+  // Track processed audio to prevent duplicates
+  const processedAudioIdsRef = useRef(new Set());
 
   // Initialize AudioMixer for translated speech playback
   useEffect(() => {
@@ -59,6 +66,113 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
       }
     };
   }, [socket]);
+
+  // Audio queue processor
+  const processAudioQueue = async () => {
+    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    
+    try {
+      isPlayingRef.current = true;
+      const nextAudio = audioQueueRef.current.shift();
+      
+      // Show audio notification
+      const audioNotification = document.createElement('div');
+      audioNotification.textContent = '🔊 Playing translated audio...';
+      audioNotification.style.position = 'fixed';
+      audioNotification.style.top = '20px';
+      audioNotification.style.left = '50%';
+      audioNotification.style.transform = 'translateX(-50%)';
+      audioNotification.style.backgroundColor = 'rgba(0,0,0,0.7)';
+      audioNotification.style.color = 'white';
+      audioNotification.style.padding = '10px 20px';
+      audioNotification.style.borderRadius = '20px';
+      audioNotification.style.zIndex = '9999';
+      document.body.appendChild(audioNotification);
+      
+      console.log(`Playing audio ${audioQueueRef.current.length + 1} from queue (${audioQueueRef.current.length} remaining)`);
+      
+      try {
+        // Ensure audio context is active
+        await audioMixerRef.current.ensureAudioContextActive();
+        await audioMixerRef.current.playTranslatedAudio(nextAudio);
+        console.log('✅ Audio playback successful');
+      } catch (error) {
+        console.error('Primary playback failed, trying fallback:', error);
+        
+        try {
+          // Fallback to Audio element
+          const audioElement = new Audio(`data:audio/wav;base64,${nextAudio}`);
+          const playPromise = audioElement.play();
+          
+          await playPromise;
+          console.log('✅ Fallback audio playback successful');
+        } catch (fallbackError) {
+          console.error('❌ All playback methods failed:', fallbackError);
+        }
+      } finally {
+        // Remove notification
+        if (document.body.contains(audioNotification)) {
+          document.body.removeChild(audioNotification);
+        }
+        
+        // Small delay before processing next item to ensure smooth transitions
+        setTimeout(() => {
+          isPlayingRef.current = false;
+          processAudioQueue(); // Process next audio in queue
+        }, 500);
+      }
+    } catch (error) {
+      console.error('Error in processAudioQueue:', error);
+      isPlayingRef.current = false;
+      processAudioQueue(); // Try next item in queue
+    }
+  };
+
+  // Helper function to add audio to queue and start processing
+  // Add a generateAudioId function to create a unique identifier for audio data
+  const generateAudioId = (audioData, requestId) => {
+    // Use requestId if available, otherwise use a hash of the first few bytes of audio data
+    if (requestId) return requestId;
+    
+    // Simple hash function for audio data
+    let hash = 0;
+    const sample = audioData.substring(0, 100); // Use first 100 chars of base64
+    for (let i = 0; i < sample.length; i++) {
+      hash = ((hash << 5) - hash) + sample.charCodeAt(i);
+      hash |= 0; // Convert to 32bit integer
+    }
+    return `audio-${Date.now()}-${hash}`;
+  };
+
+  // Modified queueAudio function to prevent duplicates
+  const queueAudio = (audioData, requestId) => {
+    // Generate an ID for this audio
+    const audioId = generateAudioId(audioData, requestId);
+    
+    // Check if we've already processed this audio
+    if (processedAudioIdsRef.current.has(audioId)) {
+      console.log(`Skipping duplicate audio with ID: ${audioId}`);
+      return;
+    }
+    
+    // Add to processed set
+    processedAudioIdsRef.current.add(audioId);
+    
+    // Limit the size of the set to prevent memory leaks
+    if (processedAudioIdsRef.current.size > 100) {
+      const oldestId = Array.from(processedAudioIdsRef.current)[0];
+      processedAudioIdsRef.current.delete(oldestId);
+    }
+    
+    // Add to queue
+    audioQueueRef.current.push(audioData);
+    console.log(`Added audio to queue (queue length: ${audioQueueRef.current.length}, ID: ${audioId})`);
+    
+    // Start processing queue if not already playing
+    if (!isPlayingRef.current) {
+      processAudioQueue();
+    }
+  };
 
   // Helper function to get the correct target user (either selectedUser or callParticipant)
   const getTargetUser = () => {
@@ -318,126 +432,42 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
   // Set up audio translation event listeners
   useEffect(() => {
     if (!socket) return;
-
-    // Add an isPlaying flag to prevent multiple playbacks
-    let isPlaying = false;
     
-    // Handle translated audio from either direction
+    // Handle translated audio coming from any socket event
     const handleTranslatedAudio = async (data) => {
       if (!data) return;
-      
-      // Skip if already playing audio to prevent repeats
-      if (isPlaying) {
-        console.log('Already playing audio, skipping to prevent repeats');
-        return;
-      }
-
-      console.log(`⭐ RECEIVED translatedAudio event, direction: ${data.requestId?.startsWith('remote') ? 'remote->local' : 'local->remote'}`, {
-        hasText: !!data.text,
-        hasAudio: !!data.audio,
-        audioLength: data.audio ? data.audio.length : 0
-      });
 
       const { text, audio, requestId } = data;
       
+      console.log(`⭐ RECEIVED translatedAudio event, direction: ${requestId?.startsWith('remote') ? 'remote->local' : 'local->remote'}`, {
+        hasText: !!text,
+        hasAudio: !!audio,
+        audioLength: audio ? audio.length : 0,
+        requestId
+      });
+
       // Update UI with transcription/translation text
       if (text) {
         setTranscribedText(text.original || '');
         setTranslatedText(text.translated || '');
       }
 
-      // Play the translated audio if available
+      // Queue the translated audio if available, passing requestId to prevent duplicates
       if (audio) {
-        try {
-          isPlaying = true;
-          
-          // Create new mixer if it doesn't exist yet
-          if (!audioMixerRef.current) {
-            audioMixerRef.current = new AudioMixer();
-            console.log('Created new AudioMixer instance for translation');
-          }
-          
-          // Show UI notification
-          const audioNotification = document.createElement('div');
-          audioNotification.textContent = '🔊 Incoming translated audio...';
-          audioNotification.style.position = 'fixed';
-          audioNotification.style.top = '20px';
-          audioNotification.style.left = '50%';
-          audioNotification.style.transform = 'translateX(-50%)';
-          audioNotification.style.backgroundColor = 'rgba(0,0,0,0.7)';
-          audioNotification.style.color = 'white';
-          audioNotification.style.padding = '10px 20px';
-          audioNotification.style.borderRadius = '20px';
-          audioNotification.style.zIndex = '9999';
-          document.body.appendChild(audioNotification);
-          
-          // Ensure audio context is active first
-          await audioMixerRef.current.ensureAudioContextActive();
-          
-          // Define a variable to track if we've successfully played audio
-          let playbackSuccessful = false;
-          
-          // Try primary method
-          try {
-            console.log('Attempting primary method: AudioMixer.playTranslatedAudio');
-            await audioMixerRef.current.playTranslatedAudio(audio);
-            console.log('✅ Primary audio playback successful');
-            playbackSuccessful = true;
-          } catch (playError) {
-            console.error('❌ Primary audio playback failed:', playError);
-            
-            // Only try fallback if primary method failed
-            if (!playbackSuccessful) {
-              try {
-                // Try audio element as fallback
-                console.log('Attempting fallback method: HTML Audio element');
-                const audioElement = new Audio(`data:audio/wav;base64,${audio}`);
-                
-                // Add event listeners for debugging
-                audioElement.addEventListener('canplaythrough', () => {
-                  console.log('Audio element can play through');
-                });
-                
-                audioElement.addEventListener('error', (e) => {
-                  console.error('Audio element error:', e.target.error);
-                });
-                
-                await audioElement.play();
-                console.log('✅ Fallback method successful');
-                playbackSuccessful = true;
-              } catch (fallbackError) {
-                console.error('❌ All audio playback methods failed:', fallbackError);
-              }
-            }
-          } finally {
-            // Remove the notification
-            setTimeout(() => {
-              if (document.body.contains(audioNotification)) {
-                document.body.removeChild(audioNotification);
-              }
-            }, 3000);
-            
-            // Reset the playing flag when audio is done
-            setTimeout(() => {
-              isPlaying = false;
-              console.log('Audio playback complete, ready for next audio');
-            }, 5000); // Safe timeout to ensure audio is finished
-          }
-        } catch (error) {
-          console.error('Error playing translated audio:', error);
-          isPlaying = false; // Reset flag on error
-        }
+        queueAudio(audio, requestId);
       } else {
         console.warn('Received translatedAudio event without audio data');
       }
     };
 
-    // Register socket event listeners - only use the main event to prevent duplicates
+    // Choose a single event to listen to based on your backend implementation
+    // Option 1: If you want to use a single event for all translations:
     socket.on('translatedAudio', handleTranslatedAudio);
     
-    // Also handle specific translation events - in case the backend uses different events for different directions
-    socket.on('localAudioTranslated', handleTranslatedAudio);
-    socket.on('remoteAudioTranslated', handleTranslatedAudio);
+    // OR Option 2: If you need separate events for local and remote
+    // socket.on('localAudioTranslated', handleTranslatedAudio);
+    // socket.on('remoteAudioTranslated', handleTranslatedAudio);
+    // Don't enable both options at once - that was causing duplicates
     
     // Handle transcript updates
     socket.on('audioTranscript', ({ text, isLocal }) => {
@@ -464,8 +494,9 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
 
     return () => {
       socket.off('translatedAudio', handleTranslatedAudio);
-      socket.off('localAudioTranslated', handleTranslatedAudio);
-      socket.off('remoteAudioTranslated', handleTranslatedAudio);
+      // If using separate events instead:
+      // socket.off('localAudioTranslated', handleTranslatedAudio);
+      // socket.off('remoteAudioTranslated', handleTranslatedAudio);
       socket.off('audioTranscript');
       socket.off('callParticipantInfo');
       socket.off('error');
@@ -482,4 +513,4 @@ const useAudioProcessing = (localStream, remoteStream, socket, selectedUser, cur
   };
 };
 
-export default useAudioProcessing; 
+export default useAudioProcessing;
